@@ -45,6 +45,7 @@ from gaze_estimator import (
     LEFT_IRIS,
     RIGHT_IRIS,
 )
+from scorer import FocusScorer
 
 # ─── 설정 ────────────────────────────────────────────────────────────────────
 
@@ -207,6 +208,7 @@ def main():
     head_smoother    = HeadPoseSmoother()
     posture_smoother = PostureSmoother()
     calibrator       = GazeCalibrator()
+    scorer           = FocusScorer()
 
     yaw_hist   = deque(maxlen=60)
     pitch_hist = deque(maxlen=60)
@@ -251,6 +253,9 @@ def main():
         posture_raw  = analyze_posture(results.pose_landmarks, img_w, img_h)
         posture_info = posture_smoother.update(posture_raw)
 
+        # ── 4. 스코어링 ──
+        score = scorer.update(gaze_info, head_info, posture_info)
+
         # ── 시각화 ──
         if SHOW_LANDMARKS:
             if gaze_info and results.face_landmarks:
@@ -281,6 +286,31 @@ def main():
         prev_time = now
         cv2.putText(frame, f"FPS {fps:.1f}", (img_w - 90, 30),
                     FONT, 0.55, C_GRAY, 1, cv2.LINE_AA)
+
+        # 상태별 색상
+        STATUS_COLOR = {
+            "focused":    C_GREEN,
+            "distracted": C_YELLOW,
+            "drowsy":     C_RED,
+            "uncertain":  C_GRAY,
+        }
+        STATUS_KO = {
+            "focused":    "집중",
+            "distracted": "딴짓",
+            "drowsy":     "졸음",
+            "uncertain":  "불명확",
+        }
+        s_color = STATUS_COLOR.get(score.status, C_GRAY)
+        s_label = STATUS_KO.get(score.status, score.status)
+
+        # 상태 텍스트 (상단 중앙)
+        put_ko_text(frame, f"상태: {s_label}", (img_w // 2 - 52, 10), 20, s_color)
+
+        # 후보 전환 진행바 (상단 바 하단)
+        if score.candidate != score.status:
+            bar_len = int((img_w - 200) * score.confirm_ratio)
+            cv2.rectangle(frame, (100, 40), (100 + bar_len, 43),
+                          STATUS_COLOR.get(score.candidate, C_GRAY), -1)
 
         # ── 좌측 수치 패널 ──
         y = 60
@@ -320,6 +350,31 @@ def main():
                 (12, y), fg=c)
         else:
             txt(frame, "[SHOULDER]  어깨 미감지", (12, y), fg=C_RED)
+        y += 26
+
+        # ── 스코어 패널 ──
+        txt(frame,
+            f"[SCORE]  집중도 {score.focus_score:.2f}  "
+            f"피로도 {score.fatigue_score:.2f}  "
+            f"EAR {score.avg_ear:.2f}",
+            (12, y), fg=s_color)
+        y += 22
+
+        # 집중도 게이지 바
+        bar_total = 200
+        cv2.rectangle(frame, (12, y), (12 + bar_total, y + 10), (50, 50, 50), -1)
+        focus_len = int(bar_total * score.focus_score)
+        focus_c   = C_GREEN if score.focus_score >= 0.6 else (C_YELLOW if score.focus_score >= 0.4 else C_RED)
+        cv2.rectangle(frame, (12, y), (12 + focus_len, y + 10), focus_c, -1)
+        txt(frame, "FOCUS", (12 + bar_total + 6, y + 10), scale=0.38, fg=C_GRAY, bg=C_BG)
+        y += 16
+
+        # 피로도 게이지 바
+        cv2.rectangle(frame, (12, y), (12 + bar_total, y + 10), (50, 50, 50), -1)
+        fatigue_len = int(bar_total * score.fatigue_score)
+        fatigue_c   = C_RED if score.fatigue_score >= 0.6 else (C_YELLOW if score.fatigue_score >= 0.4 else C_GREEN)
+        cv2.rectangle(frame, (12, y), (12 + fatigue_len, y + 10), fatigue_c, -1)
+        txt(frame, "FATIGUE", (12 + bar_total + 6, y + 10), scale=0.38, fg=C_GRAY, bg=C_BG)
 
         # ── 우측 시선 산점도 ──
         if SHOW_GAZE_GRAPH and yaw_hist:
@@ -334,6 +389,7 @@ def main():
         elif key == ord('c'):
             calibrator.reset()
             gaze_smoother.reset()
+            scorer.reset()
             print("[INFO] 시선 캘리브레이션 재시작")
         elif key == ord('s'):
             fname = f"screenshot_{int(time.time())}.png"
