@@ -46,6 +46,8 @@ from gaze_estimator import (
     RIGHT_IRIS,
 )
 from scorer import FocusScorer
+from ws_sender import WSSender
+from colab_sender import ColabSender
 
 # ─── 설정 ────────────────────────────────────────────────────────────────────
 
@@ -53,6 +55,21 @@ CAM_INDEX      = 0
 TARGET_FPS     = 30
 SHOW_LANDMARKS = True
 SHOW_GAZE_GRAPH = True
+
+# ─── WebSocket 설정 ───────────────────────────────────────────────────────────
+# 서버가 없으면 WS_ENABLED = False 로 두면 됩니다.
+WS_ENABLED   = True
+WS_SERVER    = "ws://localhost:8000"
+WS_SESSION   = "sess_abc123"   # 어떤 세션에 데이터를 보낼지
+WS_USER_ID   = "cam1"          # 이 PC의 식별자 (여러 PC 구분)
+WS_SEND_INTERVAL = 0.1         # 전송 간격 (초)
+
+# ─── Colab 설정 ───────────────────────────────────────────────────────────────
+# Colab에서 ngrok URL이 출력되면 아래에 붙여넣기
+# 서버가 없으면 COLAB_ENABLED = False 로 두면 됩니다.
+COLAB_ENABLED  = False
+COLAB_URL      = "https://xxxx-xxxx.ngrok.io"  # Colab 실행 후 출력된 URL
+COLAB_INTERVAL = 1.0   # 프레임 전송 간격 (초). 모델이 무거우면 늘리기
 
 # 색상 (BGR)
 C_GREEN  = (50,  220, 50)
@@ -213,7 +230,21 @@ def main():
     yaw_hist   = deque(maxlen=60)
     pitch_hist = deque(maxlen=60)
 
-    prev_time = time.time()
+    prev_time    = time.time()
+    last_ws_send = 0.0
+
+    # WebSocket sender 초기화
+    ws_sender = None
+    if WS_ENABLED:
+        ws_url = f"{WS_SERVER}/ws/client/{WS_SESSION}/{WS_USER_ID}"
+        ws_sender = WSSender(ws_url)
+        print(f"[WS] 전송 대상: {ws_url}")
+
+    # Colab sender 초기화
+    colab_sender = None
+    if COLAB_ENABLED:
+        colab_sender = ColabSender(COLAB_URL, interval=COLAB_INTERVAL)
+        print(f"[Colab] 전송 대상: {COLAB_URL}")
 
     print("=== Gaze / Head / Shoulder Detector ===")
     print("  q / ESC : 종료")
@@ -256,6 +287,30 @@ def main():
         # ── 4. 스코어링 ──
         score = scorer.update(gaze_info, head_info, posture_info)
 
+        # ── 5. Colab 프레임 전송 ──
+        if colab_sender:
+            colab_sender.push_frame(frame)
+
+        # ── 6. WebSocket 전송 (WS_SEND_INTERVAL마다) ──
+        now_ws = time.time()
+        if ws_sender and now_ws - last_ws_send >= WS_SEND_INTERVAL:
+            last_ws_send = now_ws
+            payload = {
+                "status":        score.status,
+                "focus_score":   round(score.focus_score,   3),
+                "fatigue_score": round(score.fatigue_score, 3),
+                "avg_ear":       round(score.avg_ear,       3),
+                "gaze_yaw":      round(gaze_info["yaw_ratio"],   3) if gaze_info else 0.0,
+                "gaze_pitch":    round(gaze_info["pitch_ratio"], 3) if gaze_info else 0.0,
+                "head_pitch":    round(head_info["pitch"],  2) if head_info else 0.0,
+                "head_yaw":      round(head_info["yaw"],    2) if head_info else 0.0,
+            }
+            # Colab 모델 결과 병합 (expression, phone_detected 등)
+            if colab_sender and colab_sender.result:
+                payload.update(colab_sender.result)
+            ws_sender.send(payload)
+
+
         # ── 시각화 ──
         if SHOW_LANDMARKS:
             if gaze_info and results.face_landmarks:
@@ -286,6 +341,20 @@ def main():
         prev_time = now
         cv2.putText(frame, f"FPS {fps:.1f}", (img_w - 90, 30),
                     FONT, 0.55, C_GRAY, 1, cv2.LINE_AA)
+
+        # WS 연결 상태 표시
+        if ws_sender:
+            ws_label = "WS ON" if ws_sender.connected else "WS..."
+            ws_color = C_GREEN if ws_sender.connected else C_YELLOW
+            cv2.putText(frame, ws_label, (img_w - 170, 30),
+                        FONT, 0.45, ws_color, 1, cv2.LINE_AA)
+
+        # Colab 연결 상태 표시
+        if colab_sender:
+            colab_label = "COLAB ON" if colab_sender.connected else "COLAB..."
+            colab_color = C_GREEN if colab_sender.connected else C_YELLOW
+            cv2.putText(frame, colab_label, (img_w - 270, 30),
+                        FONT, 0.45, colab_color, 1, cv2.LINE_AA)
 
         # 상태별 색상
         STATUS_COLOR = {
