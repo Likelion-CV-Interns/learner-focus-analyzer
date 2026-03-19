@@ -1,5 +1,5 @@
 export const STUDENTS = [
-  { id: 1, name: "김민준", seat: "A-1" },
+  { id: 1, name: "강지윤", seat: "A-1" },
   { id: 2, name: "이서연", seat: "A-2" },
   { id: 3, name: "박지호", seat: "A-3" },
   { id: 4, name: "최유나", seat: "B-1" },
@@ -45,7 +45,7 @@ export function generateStudentState(id) {
 }
 
 function randomExpression() {
-  const options = ["neutral", "bored", "happy", "confused", "focused"];
+  const options = ["중립", "지루함", "웃음", "혼란", "집중"];
   return options[Math.floor(Math.random() * options.length)];
 }
 

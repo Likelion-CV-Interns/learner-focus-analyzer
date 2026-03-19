@@ -1,14 +1,12 @@
 import likelionLogo from '../assets/likelion_logo.png';
 
 const INSTRUCTOR_TABS = [
-  { key: 'live',       icon: '🎥', label: '라이브 세션' },
   { key: 'realtime',   icon: '📡', label: '실시간 모니터링' },
   { key: 'evaluation', icon: '📊', label: '총 집중도 평가' },
 ];
 
 const MANAGER_TABS = [
   { key: 'dashboard',  icon: '🏫', label: '강의자 현황' },
-  { key: 'realtime',   icon: '📡', label: '실시간 모니터링' },
   { key: 'evaluation', icon: '📊', label: '총 집중도 평가' },
 ];
 

@@ -67,8 +67,8 @@ WS_SEND_INTERVAL = 0.1         # 전송 간격 (초)
 # ─── Colab 설정 ───────────────────────────────────────────────────────────────
 # Colab에서 ngrok URL이 출력되면 아래에 붙여넣기
 # 서버가 없으면 COLAB_ENABLED = False 로 두면 됩니다.
-COLAB_ENABLED  = False
-COLAB_URL      = "https://xxxx-xxxx.ngrok.io"  # Colab 실행 후 출력된 URL
+COLAB_ENABLED  = True
+COLAB_URL      = "https://waylon-unfancy-overidly.ngrok-free.dev"  # Colab 실행 후 출력된 URL
 COLAB_INTERVAL = 1.0   # 프레임 전송 간격 (초). 모델이 무거우면 늘리기
 
 # 색상 (BGR)
@@ -311,13 +311,12 @@ def main():
             ws_sender.send(payload)
 
 
-        # ── 시각화 ──
+        # ── 랜드마크 시각화 ──
         if SHOW_LANDMARKS:
             if gaze_info and results.face_landmarks:
                 lms = results.face_landmarks.landmark
                 draw_iris(frame, lms, LEFT_IRIS,  img_w, img_h, C_CYAN)
                 draw_iris(frame, lms, RIGHT_IRIS, img_w, img_h, C_CYAN)
-
             draw_head_axis(frame, head_info, img_w, img_h)
             draw_shoulder_line(frame, posture_info)
 
@@ -334,29 +333,7 @@ def main():
         if not calibrator.is_calibrated:
             draw_calibration_overlay(frame, calibrator.progress)
 
-        # ── 상단 바 ──
-        cv2.rectangle(frame, (0, 0), (img_w, 44), (20, 20, 20), -1)
-        now = time.time()
-        fps = 1.0 / max(now - prev_time, 1e-6)
-        prev_time = now
-        cv2.putText(frame, f"FPS {fps:.1f}", (img_w - 90, 30),
-                    FONT, 0.55, C_GRAY, 1, cv2.LINE_AA)
-
-        # WS 연결 상태 표시
-        if ws_sender:
-            ws_label = "WS ON" if ws_sender.connected else "WS..."
-            ws_color = C_GREEN if ws_sender.connected else C_YELLOW
-            cv2.putText(frame, ws_label, (img_w - 170, 30),
-                        FONT, 0.45, ws_color, 1, cv2.LINE_AA)
-
-        # Colab 연결 상태 표시
-        if colab_sender:
-            colab_label = "COLAB ON" if colab_sender.connected else "COLAB..."
-            colab_color = C_GREEN if colab_sender.connected else C_YELLOW
-            cv2.putText(frame, colab_label, (img_w - 270, 30),
-                        FONT, 0.45, colab_color, 1, cv2.LINE_AA)
-
-        # 상태별 색상
+        # ── 상태별 색상 / 라벨 ──
         STATUS_COLOR = {
             "focused":    C_GREEN,
             "distracted": C_YELLOW,
@@ -372,83 +349,94 @@ def main():
         s_color = STATUS_COLOR.get(score.status, C_GRAY)
         s_label = STATUS_KO.get(score.status, score.status)
 
-        # 상태 텍스트 (상단 중앙)
-        put_ko_text(frame, f"상태: {s_label}", (img_w // 2 - 52, 10), 20, s_color)
+        # ── Colab 결과 ──
+        colab_result   = colab_sender.result if colab_sender else {}
+        emotion_kr     = colab_result.get("emotion_kr", "-")
+        expr_conf      = colab_result.get("confidence", 0.0)
+        phone_detected = colab_result.get("phone_detected", False)
+        phone_conf     = colab_result.get("phone_confidence", 0.0)
 
-        # 후보 전환 진행바 (상단 바 하단)
+        # ── 핸드폰 감지 오버레이 ──
+        if phone_detected:
+            cv2.rectangle(frame, (3, 3), (img_w - 3, img_h - 3), (200, 50, 220), 3)
+            put_ko_text(frame, f"핸드폰 감지  {phone_conf:.0%}",
+                        (img_w // 2 - 90, img_h - 96), 22, (200, 100, 255))
+
+        # ── 상단 바 ──
+        cv2.rectangle(frame, (0, 0), (img_w, 46), (20, 20, 20), -1)
+        now = time.time()
+        fps = 1.0 / max(now - prev_time, 1e-6)
+        prev_time = now
+
+        # 상태 (좌측)
+        put_ko_text(frame, f"● {s_label}", (12, 8), 22, s_color)
+
+        # 표정 (중앙)
+        put_ko_text(frame, f"표정: {emotion_kr}  {expr_conf:.0%}", (img_w // 2 - 65, 8), 18, C_CYAN)
+
+        # WS / COLAB / FPS (우측)
+        if colab_sender:
+            cl_c = C_GREEN if colab_sender.connected else C_YELLOW
+            cv2.putText(frame, "CL", (img_w - 145, 30), FONT, 0.45, cl_c, 1, cv2.LINE_AA)
+        if ws_sender:
+            ws_c = C_GREEN if ws_sender.connected else C_YELLOW
+            cv2.putText(frame, "WS", (img_w - 115, 30), FONT, 0.45, ws_c, 1, cv2.LINE_AA)
+        cv2.putText(frame, f"{fps:.0f}fps", (img_w - 80, 30), FONT, 0.45, C_GRAY, 1, cv2.LINE_AA)
+
+        # 후보 전환 진행바
         if score.candidate != score.status:
             bar_len = int((img_w - 200) * score.confirm_ratio)
-            cv2.rectangle(frame, (100, 40), (100 + bar_len, 43),
+            cv2.rectangle(frame, (100, 42), (100 + bar_len, 45),
                           STATUS_COLOR.get(score.candidate, C_GRAY), -1)
 
-        # ── 좌측 수치 패널 ──
-        y = 60
-        # 시선
-        if gaze_info:
-            txt(frame, f"[GAZE]  Yaw {gaze_info['yaw_ratio']:+.3f}  "
-                       f"Pitch {gaze_info['pitch_ratio']:+.3f}",
-                (12, y), fg=C_CYAN)
-            y += 22
-            txt(frame, f"        EAR L:{gaze_info['left_ear']:.2f}  "
-                       f"R:{gaze_info['right_ear']:.2f}",
-                (12, y), fg=C_GRAY)
-            y += 26
-        else:
-            txt(frame, "[GAZE]  얼굴 미감지", (12, y), fg=C_RED)
-            y += 48
+        # ── 하단 정보 패널 ──
+        PANEL_H = 82
+        panel_y = img_h - PANEL_H
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, panel_y), (img_w, img_h), (15, 15, 15), -1)
+        cv2.addWeighted(overlay, 0.78, frame, 0.22, 0, frame)
 
-        # 머리
-        if head_info:
-            txt(frame,
-                f"[HEAD]  Pitch {head_info['pitch']:+6.1f}°  "
-                f"Yaw {head_info['yaw']:+6.1f}°  "
-                f"Roll {head_info['roll']:+6.1f}°",
-                (12, y), fg=C_YELLOW)
-            y += 26
-        else:
-            txt(frame, "[HEAD]  미감지", (12, y), fg=C_RED)
-            y += 26
+        bar_w = img_w // 2 - 24
+        bx    = 72
 
-        # 어깨
+        # 집중도 바
+        by = panel_y + 12
+        cv2.putText(frame, "FOCUS",   (10, by + 10), FONT, 0.42, C_GRAY, 1, cv2.LINE_AA)
+        cv2.rectangle(frame, (bx, by), (bx + bar_w, by + 12), (50, 50, 50), -1)
+        focus_c = C_GREEN if score.focus_score >= 0.6 else (C_YELLOW if score.focus_score >= 0.4 else C_RED)
+        cv2.rectangle(frame, (bx, by), (bx + int(bar_w * score.focus_score), by + 12), focus_c, -1)
+        cv2.putText(frame, f"{score.focus_score:.0%}", (bx + bar_w + 6, by + 11),
+                    FONT, 0.45, focus_c, 1, cv2.LINE_AA)
+
+        # 피로도 바
+        by2 = panel_y + 38
+        cv2.putText(frame, "FATIGUE", (10, by2 + 10), FONT, 0.42, C_GRAY, 1, cv2.LINE_AA)
+        cv2.rectangle(frame, (bx, by2), (bx + bar_w, by2 + 12), (50, 50, 50), -1)
+        fatigue_c = C_RED if score.fatigue_score >= 0.6 else (C_YELLOW if score.fatigue_score >= 0.4 else C_GREEN)
+        cv2.rectangle(frame, (bx, by2), (bx + int(bar_w * score.fatigue_score), by2 + 12), fatigue_c, -1)
+        cv2.putText(frame, f"{score.fatigue_score:.0%}", (bx + bar_w + 6, by2 + 11),
+                    FONT, 0.45, fatigue_c, 1, cv2.LINE_AA)
+
+        # 우측 핵심 수치 4줄
+        rx = img_w // 2 + 12
+        ry = panel_y + 14
+        ear_val  = f"EAR {score.avg_ear:.2f}"
+        gaze_val = (f"Gaze {gaze_info['yaw_ratio']:+.2f} / {gaze_info['pitch_ratio']:+.2f}"
+                    if gaze_info else "Gaze -")
+        head_val = (f"Head  P{head_info['pitch']:+.0f}  Y{head_info['yaw']:+.0f}"
+                    if head_info else "Head -")
         if posture_info and posture_info["both_visible"]:
-            tilt = posture_info["shoulder_tilt_ratio"]
-            deg  = posture_info["tilt_deg"]
-            c    = C_GREEN if abs(tilt) < 0.12 else C_RED
-            txt(frame,
-                f"[SHOULDER]  Tilt {tilt:+.3f}  ({deg:+.1f}°)",
-                (12, y), fg=c)
+            sh_ok  = abs(posture_info["shoulder_tilt_ratio"]) < 0.12
+            sh_c   = C_GREEN if sh_ok else C_RED
+            sh_deg = posture_info["tilt_deg"]
+            sh_val = f"Shoulder  OK" if sh_ok else f"Shoulder  {sh_deg:+.1f}deg"
         else:
-            txt(frame, "[SHOULDER]  어깨 미감지", (12, y), fg=C_RED)
-        y += 26
+            sh_val, sh_c = "Shoulder -", C_GRAY
 
-        # ── 스코어 패널 ──
-        txt(frame,
-            f"[SCORE]  집중도 {score.focus_score:.2f}  "
-            f"피로도 {score.fatigue_score:.2f}  "
-            f"EAR {score.avg_ear:.2f}",
-            (12, y), fg=s_color)
-        y += 22
-
-        # 집중도 게이지 바
-        bar_total = 200
-        cv2.rectangle(frame, (12, y), (12 + bar_total, y + 10), (50, 50, 50), -1)
-        focus_len = int(bar_total * score.focus_score)
-        focus_c   = C_GREEN if score.focus_score >= 0.6 else (C_YELLOW if score.focus_score >= 0.4 else C_RED)
-        cv2.rectangle(frame, (12, y), (12 + focus_len, y + 10), focus_c, -1)
-        txt(frame, "FOCUS", (12 + bar_total + 6, y + 10), scale=0.38, fg=C_GRAY, bg=C_BG)
-        y += 16
-
-        # 피로도 게이지 바
-        cv2.rectangle(frame, (12, y), (12 + bar_total, y + 10), (50, 50, 50), -1)
-        fatigue_len = int(bar_total * score.fatigue_score)
-        fatigue_c   = C_RED if score.fatigue_score >= 0.6 else (C_YELLOW if score.fatigue_score >= 0.4 else C_GREEN)
-        cv2.rectangle(frame, (12, y), (12 + fatigue_len, y + 10), fatigue_c, -1)
-        txt(frame, "FATIGUE", (12 + bar_total + 6, y + 10), scale=0.38, fg=C_GRAY, bg=C_BG)
-
-        # ── 우측 시선 산점도 ──
-        if SHOW_GAZE_GRAPH and yaw_hist:
-            draw_gaze_graph(frame, list(yaw_hist), list(pitch_hist),
-                            x0=img_w - 160, y0=50)
+        cv2.putText(frame, ear_val,  (rx, ry),      FONT, 0.42, C_GRAY,   1, cv2.LINE_AA)
+        cv2.putText(frame, gaze_val, (rx, ry + 18), FONT, 0.42, C_CYAN,   1, cv2.LINE_AA)
+        cv2.putText(frame, head_val, (rx, ry + 36), FONT, 0.42, C_YELLOW, 1, cv2.LINE_AA)
+        cv2.putText(frame, sh_val,   (rx, ry + 54), FONT, 0.42, sh_c,     1, cv2.LINE_AA)
 
         cv2.imshow("Gaze / Head / Shoulder Detector", frame)
 

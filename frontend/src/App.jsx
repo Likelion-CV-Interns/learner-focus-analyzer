@@ -1,7 +1,6 @@
 import { useState, useCallback } from 'react';
 import LoginPage from './components/LoginPage';
 import Navbar from './components/Navbar';
-import LiveSession from './components/LiveSession';
 import RealTimeMonitor from './components/RealTimeMonitor';
 import TotalEvaluation from './components/TotalEvaluation';
 import ManagerDashboard from './components/ManagerDashboard';
@@ -15,14 +14,13 @@ function formatTime(date) {
 
 // Default start tab per role
 const DEFAULT_TAB = {
-  instructor: 'live',
+  instructor: 'realtime',
   manager: 'dashboard',
 };
 
 export default function App() {
   const [user, setUser] = useState(null);          // { role, name, id }
   const [activePage, setActivePage] = useState('');
-  const [monitoringInstructor, setMonitoringInstructor] = useState(null); // manager가 선택한 강의자
 
   const [notifications, setNotifications] = useState([]);
   const [toasts, setToasts] = useState([]);
@@ -38,7 +36,6 @@ export default function App() {
     setActivePage('');
     setNotifications([]);
     setToasts([]);
-    setMonitoringInstructor(null);
   }, []);
 
   const addNotification = useCallback((notif) => {
@@ -55,12 +52,6 @@ export default function App() {
 
   const dismissToast = useCallback((id) => {
     setToasts(prev => prev.filter(t => t.id !== id));
-  }, []);
-
-  // Manager: "실시간 모니터링 보기" 클릭 시 해당 강의자 세션으로 이동
-  const handleMonitorInstructor = useCallback((instructor) => {
-    setMonitoringInstructor(instructor);
-    setActivePage('realtime');
   }, []);
 
   const handlePageChange = useCallback((page) => {
@@ -107,22 +98,17 @@ export default function App() {
       {/* Page content */}
       <div style={{ flex: 1 }}>
 
-        {/* ── 강의자 전용 ── */}
-        {user.role === 'instructor' && activePage === 'live' && (
-          <LiveSession user={user} />
+        {/* ── 강의자 전용: 실시간 모니터링 ── */}
+        {user.role === 'instructor' && activePage === 'realtime' && (
+          <RealTimeMonitor
+            onNewNotification={addNotification}
+            monitoringTarget={{ sessionId: user.sessionId ?? 'sess_abc123', name: user.name, course: '' }}
+          />
         )}
 
         {/* ── 매니저 전용 ── */}
         {user.role === 'manager' && activePage === 'dashboard' && (
-          <ManagerDashboard onMonitor={handleMonitorInstructor} />
-        )}
-
-        {/* ── 공통: 실시간 모니터링 ── */}
-        {activePage === 'realtime' && (
-          <RealTimeMonitor
-            onNewNotification={addNotification}
-            monitoringTarget={user.role === 'manager' ? monitoringInstructor : null}
-          />
+          <ManagerDashboard onNewNotification={addNotification} />
         )}
 
         {/* ── 공통: 총 집중도 평가 ── */}

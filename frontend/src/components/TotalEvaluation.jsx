@@ -1,4 +1,11 @@
 import { useState, useMemo } from 'react';
+
+// 매니저 화면에서 사용할 강의자 목록 (ManagerDashboard와 동일)
+const INSTRUCTORS = [
+  { id: 'teacher1', name: '김강사', course: 'Python 기초' },
+  { id: 'teacher2', name: '이강사', course: '알고리즘' },
+  { id: 'teacher3', name: '박강사', course: '머신러닝' },
+];
 import {
   LineChart, Line, AreaChart, Area, BarChart, Bar,
   RadarChart, Radar, PolarGrid, PolarAngleAxis,
@@ -249,17 +256,95 @@ function StudentReport({ student }) {
   );
 }
 
-export default function TotalEvaluation() {
+export default function TotalEvaluation({ user }) {
+  const isManager = user?.role === 'manager';
+
+  // 매니저: 강의자 선택 → 강의 선택 드릴다운
+  const [selectedInstructor, setSelectedInstructor] = useState(null);
   const [selectedLecture, setSelectedLecture] = useState(LECTURES[LECTURES.length - 1].id);
-  const [viewMode, setViewMode] = useState('class'); // 'class' | 'individual'
+  const [viewMode, setViewMode] = useState('class');
   const [selectedStudent, setSelectedStudent] = useState(STUDENTS[0]);
 
+  // ── 매니저: 강의자 선택 화면 ──
+  if (isManager && !selectedInstructor) {
+    return (
+      <div style={{ maxWidth: 1280, margin: '0 auto', padding: '24px' }}>
+        <div style={{ marginBottom: 24 }}>
+          <h1 style={{ fontSize: 22, fontWeight: 800, color: '#1A1A1A' }}>총 집중도 평가</h1>
+          <p style={{ fontSize: 13, color: '#888', marginTop: 3 }}>강의자를 선택하면 강의별 리포트를 확인할 수 있습니다</p>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
+          {INSTRUCTORS.map(inst => (
+            <button
+              key={inst.id}
+              onClick={() => setSelectedInstructor(inst)}
+              style={{
+                background: '#fff', borderRadius: 16, padding: '24px',
+                border: '1.5px solid #EEE', cursor: 'pointer', textAlign: 'left',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
+                transition: 'box-shadow 0.2s, border 0.2s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.border = '1.5px solid #FF6B2B'; e.currentTarget.style.boxShadow = '0 4px 20px rgba(255,107,43,0.12)'; }}
+              onMouseLeave={e => { e.currentTarget.style.border = '1.5px solid #EEE'; e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.04)'; }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 14 }}>
+                <div style={{
+                  width: 48, height: 48, borderRadius: 14,
+                  background: 'linear-gradient(135deg, #FF6B2B, #FF9A5C)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: '#fff', fontSize: 20, fontWeight: 800,
+                }}>
+                  {inst.name[0]}
+                </div>
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: '#1A1A1A' }}>{inst.name}</div>
+                  <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>{inst.course}</div>
+                </div>
+              </div>
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '10px 12px', background: '#FFF5F0', borderRadius: 10,
+                border: '1px solid #FFE0D0',
+              }}>
+                <span style={{ fontSize: 12, color: '#888' }}>강의 {LECTURES.length}개 기록</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#FF6B2B' }}>리포트 보기 →</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // ── 공통: 리포트 화면 (강의자 선택 후 or 강의자 본인) ──
   return (
-    <div style={{ maxWidth: 1280, margin: '0 auto', padding: '24px 24px' }}>
+    <div style={{ maxWidth: 1280, margin: '0 auto', padding: '24px' }}>
       {/* Header */}
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 800, color: '#1A1A1A' }}>총 집중도 평가</h1>
-        <p style={{ fontSize: 13, color: '#888', marginTop: 3 }}>강의별 학습자 집중도 종합 리포트</p>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
+        {isManager && (
+          <button
+            onClick={() => setSelectedInstructor(null)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '7px 14px', borderRadius: 8,
+              background: '#F5F5F5', border: '1.5px solid #E0E0E0',
+              fontSize: 13, fontWeight: 600, color: '#555', cursor: 'pointer',
+            }}
+          >
+            ← 강의자 목록
+          </button>
+        )}
+        <div>
+          <h1 style={{ fontSize: 22, fontWeight: 800, color: '#1A1A1A' }}>
+            총 집중도 평가
+            {isManager && selectedInstructor && (
+              <span style={{ fontSize: 15, fontWeight: 600, color: '#FF6B2B', marginLeft: 10 }}>
+                · {selectedInstructor.name}
+              </span>
+            )}
+          </h1>
+          <p style={{ fontSize: 13, color: '#888', marginTop: 3 }}>강의별 학습자 집중도 종합 리포트</p>
+        </div>
       </div>
 
       {/* Controls */}
@@ -275,35 +360,27 @@ export default function TotalEvaluation() {
             value={selectedLecture}
             onChange={e => setSelectedLecture(e.target.value)}
             style={{
-              padding: '8px 12px',
-              borderRadius: 8,
-              border: '1.5px solid #E8E8E8',
-              fontSize: 13,
-              color: '#1A1A1A',
-              background: '#FAFAFA',
-              cursor: 'pointer',
+              padding: '8px 12px', borderRadius: 8,
+              border: '1.5px solid #E8E8E8', fontSize: 13,
+              color: '#1A1A1A', background: '#FAFAFA', cursor: 'pointer',
             }}
           >
             {LECTURES.map(lec => (
-              <option key={lec.id} value={lec.id}>
-                {lec.name} ({lec.date})
-              </option>
+              <option key={lec.id} value={lec.id}>{lec.name} ({lec.date})</option>
             ))}
           </select>
         </div>
 
         <div style={{ display: 'flex', gap: 6 }}>
           {[
-            { key: 'class', label: '🏫 전체 리포트' },
+            { key: 'class',      label: '🏫 전체 리포트' },
             { key: 'individual', label: '👤 개별 리포트' },
           ].map(v => (
             <button
               key={v.key}
               onClick={() => setViewMode(v.key)}
               style={{
-                padding: '8px 16px',
-                borderRadius: 8,
-                fontSize: 13,
+                padding: '8px 16px', borderRadius: 8, fontSize: 13,
                 fontWeight: viewMode === v.key ? 700 : 500,
                 background: viewMode === v.key ? '#FF6B2B' : '#F5F5F5',
                 color: viewMode === v.key ? '#fff' : '#555',
@@ -322,13 +399,9 @@ export default function TotalEvaluation() {
               value={selectedStudent.id}
               onChange={e => setSelectedStudent(STUDENTS.find(s => s.id === Number(e.target.value)))}
               style={{
-                padding: '8px 12px',
-                borderRadius: 8,
-                border: '1.5px solid #E8E8E8',
-                fontSize: 13,
-                color: '#1A1A1A',
-                background: '#FAFAFA',
-                cursor: 'pointer',
+                padding: '8px 12px', borderRadius: 8,
+                border: '1.5px solid #E8E8E8', fontSize: 13,
+                color: '#1A1A1A', background: '#FAFAFA', cursor: 'pointer',
               }}
             >
               {STUDENTS.map(s => (

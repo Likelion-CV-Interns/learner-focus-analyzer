@@ -1,8 +1,35 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
 } from 'recharts';
 import { STUDENTS, STATUS_CONFIG, generateStudentState, generateTimeSeries } from '../utils/mockData';
+
+const WS_SERVER = 'ws://localhost:8000';
+
+// cam_id → STUDENTS의 id 매핑 (실제 데이터를 어떤 학생에 덮어씌울지)
+const CAM_STUDENT_MAP = {
+  cam1: 1,   // cam1 데이터 → 학생 id 1번 (강지윤)
+  // cam2: 2,  // 카메라 추가 시 여기에 계속
+};
+
+// detection → server 데이터를 프론트 StudentState 형식으로 변환
+function toStudentState(data) {
+  const statusMap = { focused: 'focused', distracted: 'distracted', drowsy: 'drowsy', uncertain: 'distracted' };
+  // 핸드폰 감지 시 status를 'phone'으로 오버라이드
+  const baseStatus = statusMap[data.status] ?? 'distracted';
+  const status = data.phone_detected ? 'phone' : baseStatus;
+  return {
+    status,
+    focusScore:       Math.round((data.focus_score ?? 0) * 100),
+    fatigueScore:     Math.round((data.fatigue_score ?? 0) * 100),
+    eyeBlink:         Math.round((data.avg_ear ?? 0.25) * 100),
+    expression:       data.emotion_kr ?? null,   // Colab 표정 (한국어), 없으면 null
+    phoneDetected:    data.phone_detected ?? false,
+    phoneConfidence:  data.phone_confidence ?? 0,
+    lastUpdate:       new Date(data.timestamp ?? Date.now()),
+    connected:        data.connected !== false,
+  };
+}
 
 function StatusBadge({ status }) {
   const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.focused;
@@ -53,7 +80,6 @@ function FocusBar({ value }) {
 }
 
 function StudentCard({ student, state, onClick, selected }) {
-  const cfg = STATUS_CONFIG[state.status];
   return (
     <div
       onClick={() => onClick(student.id)}
@@ -88,11 +114,8 @@ function StudentCard({ student, state, onClick, selected }) {
         </div>
         <div style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 11, color: '#AAA' }}>표정</div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#444', marginTop: 2 }}>
-            {state.expression === 'focused' ? '집중' :
-             state.expression === 'bored' ? '지루함' :
-             state.expression === 'happy' ? '즐거움' :
-             state.expression === 'confused' ? '혼란' : '중립'}
+          <div style={{ fontSize: 13, fontWeight: 700, color: state.phoneDetected ? '#8B5CF6' : '#444', marginTop: 2 }}>
+            {state.phoneDetected ? '📱' : (state.expression ?? '-')}
           </div>
         </div>
       </div>
@@ -129,12 +152,99 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget })
   const [filterStatus, setFilterStatus] = useState('all');
   const [isLive, setIsLive] = useState(true);
 
-  const avgFocus = Math.round(
-    Object.values(states).reduce((sum, s) => sum + s.focusScore, 0) / STUDENTS.length
+  // ── 실시간 WebSocket 상태 ──
+  const [wsStudents, setWsStudents] = useState({});   // user_id → state
+  const [wsConnected, setWsConnected] = useState(false);
+  const wsRef = useRef(null);
+
+  const sessionId = monitoringTarget?.sessionId;
+
+  useEffect(() => {
+    if (!sessionId) return;
+
+    let ws;
+    let pingTimer;
+
+    function connect() {
+      ws = new WebSocket(`${WS_SERVER}/ws/dashboard/${sessionId}`);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setWsConnected(true);
+        pingTimer = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.send('ping');
+        }, 20000);
+      };
+
+      ws.onmessage = (e) => {
+        if (e.data === 'pong') return;
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'snapshot') {
+          // 초기 스냅샷: 연결된 모든 유저 상태 한 번에 수신
+          const next = {};
+          Object.entries(msg.users || {}).forEach(([uid, data]) => {
+            next[uid] = toStudentState(data);
+          });
+          setWsStudents(next);
+        } else if (msg.type === 'user_update') {
+          setWsStudents(prev => ({ ...prev, [msg.user_id]: toStudentState(msg) }));
+          // 집중도 추이 차트에도 포인트 추가
+          setTimeSeries(prev => {
+            const now = new Date();
+            const timeStr = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`;
+            const allStates = Object.values({ ...wsStudents, [msg.user_id]: toStudentState(msg) });
+            const avgFocus  = allStates.length ? Math.round(allStates.reduce((s, v) => s + v.focusScore, 0) / allStates.length) : 0;
+            const avgFatigue = allStates.length ? Math.round(allStates.reduce((s, v) => s + v.fatigueScore, 0) / allStates.length) : 0;
+            return [...prev.slice(-19), { time: timeStr, focus: avgFocus, fatigue: avgFatigue }];
+          });
+        } else if (msg.type === 'user_disconnect') {
+          setWsStudents(prev => {
+            const next = { ...prev };
+            if (next[msg.user_id]) next[msg.user_id] = { ...next[msg.user_id], connected: false };
+            return next;
+          });
+        }
+      };
+
+      ws.onclose = () => {
+        setWsConnected(false);
+        clearInterval(pingTimer);
+        // 3초 후 재연결
+        setTimeout(connect, 3000);
+      };
+
+      ws.onerror = () => ws.close();
+    }
+
+    connect();
+
+    return () => {
+      clearInterval(pingTimer);
+      ws?.close();
+    };
+  }, [sessionId]);
+
+  // 항상 STUDENTS 전체 표시. WS 데이터가 있는 학생만 실제 데이터로 덮어씌움
+  const mergedStates = Object.fromEntries(
+    STUDENTS.map(s => {
+      const camId = Object.entries(CAM_STUDENT_MAP).find(([, sid]) => sid === s.id)?.[0];
+      const wsState = camId ? wsStudents[camId] : undefined;
+      return [s.id, wsState ?? states[s.id]];
+    })
   );
-  const focusedCount = Object.values(states).filter(s => s.status === 'focused').length;
-  const drowsyCount = Object.values(states).filter(s => s.status === 'drowsy').length;
-  const phoneCount = Object.values(states).filter(s => s.status === 'phone').length;
+
+  const displayStudents = STUDENTS;
+  const displayStates   = mergedStates;
+
+  const allStateValues = Object.values(displayStates);
+  const totalCount   = displayStudents.length || 1;
+  const avgFocus     = allStateValues.length
+    ? Math.round(allStateValues.reduce((sum, s) => sum + s.focusScore, 0) / allStateValues.length)
+    : 0;
+  const focusedCount = allStateValues.filter(s => s.status === 'focused').length;
+  const drowsyCount  = allStateValues.filter(s => s.status === 'drowsy').length;
+  const phoneCount   = allStateValues.filter(s => s.status === 'phone').length;
+  const focusRatio   = Math.round((focusedCount / totalCount) * 100);
 
   const updateStates = useCallback(() => {
     setStates(prev => {
@@ -199,12 +309,12 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget })
     return () => clearInterval(interval);
   }, [isLive, updateStates]);
 
-  const filtered = STUDENTS.filter(s =>
-    filterStatus === 'all' || states[s.id]?.status === filterStatus
+  const filtered = displayStudents.filter(s =>
+    filterStatus === 'all' || displayStates[s.id]?.status === filterStatus
   );
 
-  const selectedStudent = selectedId ? STUDENTS.find(s => s.id === selectedId) : null;
-  const selectedState = selectedId ? states[selectedId] : null;
+  const selectedStudent = selectedId ? displayStudents.find(s => s.id === selectedId) : null;
+  const selectedState = selectedId ? displayStates[selectedId] : null;
 
   return (
     <div style={{ maxWidth: 1280, margin: '0 auto', padding: '24px 24px' }}>
@@ -219,6 +329,22 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget })
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {/* 웹캠 WS 연결 상태 */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '6px 14px', borderRadius: 20,
+            background: wsConnected ? '#EFF6FF' : '#F5F5F5',
+            border: `1.5px solid ${wsConnected ? '#BFDBFE' : '#DDD'}`,
+          }}>
+            <span style={{
+              width: 8, height: 8, borderRadius: '50%',
+              background: wsConnected ? '#3B82F6' : '#CCC',
+              animation: wsConnected ? 'pulse 1.5s infinite' : 'none',
+            }} />
+            <span style={{ fontSize: 12, fontWeight: 700, color: wsConnected ? '#1D4ED8' : '#888' }}>
+              {wsConnected ? '📡 실시간 연결' : '서버 대기 중'}
+            </span>
+          </div>
           <div style={{
             display: 'flex', alignItems: 'center', gap: 6,
             padding: '6px 14px', borderRadius: 20,
@@ -257,12 +383,12 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget })
           color={avgFocus >= 60 ? '#22C55E' : avgFocus >= 40 ? '#F59E0B' : '#EF4444'}
           icon="🎯" sub="전체 학습자 기준" />
         <StatCard label="집중 중" value={`${focusedCount}명`}
-          color="#22C55E" icon="✅" sub={`전체 ${STUDENTS.length}명 중`} />
+          color="#22C55E" icon="✅" sub={`전체 ${totalCount}명 중`} />
         <StatCard label="졸음 감지" value={`${drowsyCount}명`}
           color="#EF4444" icon="😴" sub="즉시 확인 필요" />
         <StatCard label="핸드폰 사용" value={`${phoneCount}명`}
           color="#8B5CF6" icon="📱" sub="주의 필요" />
-        <StatCard label="전체 집중률" value={`${Math.round((focusedCount / STUDENTS.length) * 100)}%`}
+        <StatCard label="전체 집중률" value={`${focusRatio}%`}
           color="#FF6B2B" icon="📊" sub="집중 학습자 비율" />
       </div>
 
@@ -335,7 +461,7 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget })
               <StudentCard
                 key={student.id}
                 student={student}
-                state={states[student.id]}
+                state={displayStates[student.id]}
                 onClick={setSelectedId}
                 selected={selectedId === student.id}
               />

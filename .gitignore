@@ -26,6 +26,11 @@ ENV/
 *.pkl
 *.h5
 *.weights
+*.joblib
+
+
+# Screenshots (detection/main.py 's' 키로 저장)
+screenshot_*.png
 
 # Environment variables
 .env
@@ -44,8 +49,9 @@ frontend/.env.*
 .AppleDouble
 .LSOverride
 
-# ── IDE ──────────────────────────────────────────
+# ── IDE / Claude Code ────────────────────────────
 .idea/
 .vscode/
 *.swp
 *.swo
+.claude/
