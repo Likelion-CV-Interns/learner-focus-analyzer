@@ -336,12 +336,14 @@ def main():
         # ── 상태별 색상 / 라벨 ──
         STATUS_COLOR = {
             "focused":    C_GREEN,
+            "focusing":   C_CYAN,
             "distracted": C_YELLOW,
             "drowsy":     C_RED,
             "uncertain":  C_GRAY,
         }
         STATUS_KO = {
             "focused":    "집중",
+            "focusing":   "집중 시작",
             "distracted": "딴짓",
             "drowsy":     "졸음",
             "uncertain":  "불명확",

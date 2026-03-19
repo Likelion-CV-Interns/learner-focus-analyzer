@@ -10,45 +10,56 @@ gaze_estimator.py의 detection 결과(gaze / head / posture)를 받아
     status       : "focused" | "distracted" | "drowsy" | "uncertain"
 """
 
-from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 
 # ─── 임계값 상수 ──────────────────────────────────────────────────────────────
 
 # 시선 (gaze_ratio: -1 ~ +1)
-GAZE_YAW_THRESH   = 0.30   # 좌우 ±30% 이내 → 화면 응시
-GAZE_PITCH_THRESH = 0.30   # 상하 ±30% 이내 → 화면 응시
+GAZE_YAW_THRESH   = 0.25   # 좌우 ±25% 이내 → 화면 응시 (이전 0.30에서 엄격하게)
+GAZE_PITCH_THRESH = 0.25   # 상하 ±25% 이내
 
 # 고개 방향 (solvePnP 각도, 단위: 도)
-HEAD_PITCH_THRESH = 15.0   # 고개 상하 ±15° 이내
-HEAD_YAW_THRESH   = 20.0   # 고개 좌우 ±20° 이내
+HEAD_PITCH_THRESH = 12.0   # 고개 상하 ±12° 이내 (이전 15°에서 엄격하게)
+HEAD_YAW_THRESH   = 18.0   # 고개 좌우 ±18° 이내
 
 # 눈 종횡비 (EAR: Eye Aspect Ratio)
 EAR_NORMAL = 0.28          # 정상적으로 눈을 뜬 상태
 EAR_DROWSY = 0.20          # 이 미만이면 눈이 감기는 중
 
 # 고개 숙임 (졸음 판단용)
-HEAD_PITCH_DROWSY = 15.0   # 고개가 이 이상 아래로 숙여지면 졸음 조건
+HEAD_PITCH_DROWSY = 15.0
 
-# 어깨 기울기 (shoulder_tilt_ratio 기준)
-SHOULDER_TILT_THRESH = 0.12   # 이 이상 기울면 자세 불량
-SHOULDER_TILT_DROWSY = 0.15   # 졸음 판단 시 추가 조건 (더 관대하게)
+# 어깨 기울기 (score 보조 신호, status 판정에는 미사용)
+SHOULDER_TILT_THRESH = 0.12
 
-# 가중치 (합 = 1.0)
-GAZE_WEIGHT     = 0.55
-HEAD_WEIGHT     = 0.35
-SHOULDER_WEIGHT = 0.10
+# 가중치 (합 = 1.0) — 어깨는 score 보조용으로만 사용
+GAZE_WEIGHT     = 0.60
+HEAD_WEIGHT     = 0.40
+
+# status 전환 점수 임계값
+FOCUS_THRESH      = 0.55   # focus_score ≥ 이 값 → "focused" 후보
+DISTRACT_THRESH   = 0.35   # focus_score < 이 값 → "distracted" 후보
+# 중간 구간(0.35~0.55)은 현재 status 유지
 
 # 상태 전환 확인 프레임 수 (30fps 기준)
-#   느리게 진행되는 상태(졸음)는 길게, 즉각성이 필요한 상태는 짧게
 CONFIRM_FRAMES = {
-    "focused":    10,   # ~0.33초
-    "distracted": 15,   # ~0.50초
+    "focused":    20,   # ~0.67초 (이전보다 길게 — 순간 시선 이탈 무시)
+    "distracted": 25,   # ~0.83초
     "drowsy":     20,   # ~0.67초
-    "uncertain":   5,
+    "focusing":   15,   # ~0.50초 (집중 시작 중 — 중간 구간)
+    "uncertain":  10,   # 얼굴 미감지
 }
+
+# ── EMA 스무딩 계수 ────────────────────────────────────────────────────────────
+# 피로도 (EAR EMA): α 작을수록 느리게 반응 → 단발 깜빡임 무시
+#   α=0.005 기준, 단발 깜빡임(2프레임) 영향 ≈ 1%  /  30초 저하 → 완전 반영
+EAR_EMA_ALPHA   = 0.005
+
+# 집중도 (focus EMA): α 클수록 빠르게 반응
+#   α=0.05 기준, 시정수 ≈ 20프레임(0.67초) → 순간 노이즈 제거 + 빠른 반응
+FOCUS_EMA_ALPHA = 0.05
 
 
 # ─── 결과 데이터클래스 ────────────────────────────────────────────────────────
@@ -96,6 +107,8 @@ class FocusScorer:
         self._status: str = "uncertain"
         self._candidate: str = "uncertain"
         self._confirm_count: int = 0
+        self._ear_ema: Optional[float] = None   # 첫 프레임 전까지 None
+        self._focus_ema: float = 0.5            # 중립값으로 시작
 
     # ── 점수 계산 ──────────────────────────────────────────────────────────────
 
@@ -104,102 +117,107 @@ class FocusScorer:
                     head_info:    Optional[dict],
                     posture_info: Optional[dict]) -> tuple[float, float, float, float]:
         """
-        Returns (focus_score, gaze_score, head_score, shoulder_score)  모두 0.0~1.0
+        Returns (raw_focus, gaze_score, head_score, shoulder_score)  모두 0.0~1.0
+
+        gaze_score : min(yaw_score, pitch_score) — 둘 중 나쁜 쪽이 전체를 결정
+        head_score : min(pitch_score, yaw_score) — 동일
+        어깨       : 보조 페널티로만 사용 (status 판정에는 미관여)
         """
         if gaze_info is None:
             return 0.0, 0.0, 0.0, 0.0
 
-        # 시선: yaw·pitch 각각 선형 감쇠, 곱으로 결합
-        gaze_score = (
-            _linear_score(gaze_info["yaw_ratio"],   GAZE_YAW_THRESH)
-            * _linear_score(gaze_info["pitch_ratio"], GAZE_PITCH_THRESH)
+        # 시선: min 방식 — 하나라도 범위를 벗어나면 점수 하락
+        gaze_score = min(
+            _linear_score(gaze_info["yaw_ratio"],   GAZE_YAW_THRESH),
+            _linear_score(gaze_info["pitch_ratio"], GAZE_PITCH_THRESH),
         )
 
-        # 고개: pitch·yaw 평균 선형 감쇠
+        # 고개: min 방식
         if head_info is not None:
-            head_score = (
-                _linear_score(head_info["pitch"], HEAD_PITCH_THRESH)
-                + _linear_score(head_info["yaw"],   HEAD_YAW_THRESH)
-            ) / 2.0
+            head_score = min(
+                _linear_score(head_info["pitch"], HEAD_PITCH_THRESH),
+                _linear_score(head_info["yaw"],   HEAD_YAW_THRESH),
+            )
         else:
-            head_score = 0.5   # 고개 미감지 → 중립값
+            head_score = 0.5   # 고개 미감지 → 중립
 
-        # 어깨: tilt_ratio 선형 감쇠 (양쪽 어깨가 감지된 경우에만)
+        # 어깨: 보조 페널티 (기울어지면 score를 최대 10% 감점)
         if posture_info is not None and posture_info.get("both_visible"):
             shoulder_score = _linear_score(
                 posture_info["shoulder_tilt_ratio"], SHOULDER_TILT_THRESH
             )
         else:
-            shoulder_score = 0.5   # 어깨 미감지 → 중립값
+            shoulder_score = 1.0   # 미감지 → 페널티 없음
 
-        focus_score = _clamp(
-            gaze_score     * GAZE_WEIGHT
-            + head_score   * HEAD_WEIGHT
-            + shoulder_score * SHOULDER_WEIGHT,
+        raw_focus = _clamp(
+            gaze_score * GAZE_WEIGHT
+            + head_score * HEAD_WEIGHT
+            - (1.0 - shoulder_score) * 0.10,   # 어깨 기울기 페널티 (최대 -0.10)
             0.0, 1.0
         )
-        return focus_score, gaze_score, head_score, shoulder_score
+        return raw_focus, gaze_score, head_score, shoulder_score
 
-    @staticmethod
-    def _calc_fatigue(gaze_info: Optional[dict]) -> tuple[float, float]:
+    def _calc_fatigue(self, gaze_info: Optional[dict]) -> tuple[float, float]:
         """
         Returns (fatigue_score, avg_ear)
 
-        EAR이 낮을수록 피로도 상승.
-        EAR_NORMAL 이상 → 0.0, EAR_DROWSY 이하 → 1.0 (선형 보간)
+        EAR EMA 기반 피로도:
+          - 단발 깜빡임(1~2프레임)은 EMA에 거의 영향 없음 (~1%)
+          - 지속적인 눈 감김(수십 초)이 쌓여야 피로도 상승
+          - EMA_EAR >= EAR_NORMAL → 0.0 / <= EAR_DROWSY → 1.0
         """
         if gaze_info is None:
-            return 0.0, 0.0
+            fatigue = _clamp(1.0 - ((self._ear_ema or EAR_NORMAL) - EAR_DROWSY)
+                             / (EAR_NORMAL - EAR_DROWSY), 0.0, 1.0)
+            return fatigue, 0.0
 
         avg_ear = (gaze_info["left_ear"] + gaze_info["right_ear"]) / 2.0
-        span = EAR_NORMAL - EAR_DROWSY  # 0.08
-        fatigue = _clamp(1.0 - (avg_ear - EAR_DROWSY) / span, 0.0, 1.0)
+
+        # EMA 업데이트 (첫 프레임은 현재 값으로 초기화)
+        if self._ear_ema is None:
+            self._ear_ema = avg_ear
+        else:
+            self._ear_ema = (1 - EAR_EMA_ALPHA) * self._ear_ema + EAR_EMA_ALPHA * avg_ear
+
+        span    = EAR_NORMAL - EAR_DROWSY
+        fatigue = _clamp(1.0 - (self._ear_ema - EAR_DROWSY) / span, 0.0, 1.0)
         return fatigue, avg_ear
 
     # ── 상태 분류 ─────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _classify(gaze_info:    Optional[dict],
-                  head_info:    Optional[dict],
-                  posture_info: Optional[dict],
-                  avg_ear:      float) -> str:
+    def _classify(gaze_info: Optional[dict],
+                  head_info: Optional[dict],
+                  avg_ear:   float,
+                  focus_ema: float) -> str:
         """
-        매 프레임 "후보 상태"를 결정한다.
-        우선순위: uncertain > drowsy > focused > distracted
+        focus_score(EMA) 기반으로 상태를 결정한다.
+        score와 status가 일치하도록 통일.
 
-        졸음 판단:
-            EAR 낮음  AND  (고개 숙임  OR  어깨 과도한 기울기)
-            어깨는 보조 신호 — 단독으로는 졸음 판정 안 함
+        우선순위: uncertain > drowsy > focused/distracted
+
+        졸음: EAR 저하 + 고개 숙임 (EMA가 아닌 현재 프레임 raw 값으로 즉시 감지)
+        집중/미집중: focus_ema 임계값 기준
+        중간 구간: "uncertain" → CONFIRM_FRAMES가 짧아 현재 status 유지에 가까움
         """
         if gaze_info is None:
             return "uncertain"
 
-        # 졸음 조건 분해
+        # 졸음: 즉각 반응이 필요하므로 EMA 아닌 현재 EAR 사용
         is_drowsy_ear  = avg_ear < EAR_DROWSY
         is_drowsy_head = (head_info is not None
                           and head_info["pitch"] > HEAD_PITCH_DROWSY)
-        is_drowsy_shoulder = (
-            posture_info is not None
-            and posture_info.get("both_visible", False)
-            and abs(posture_info["shoulder_tilt_ratio"]) > SHOULDER_TILT_DROWSY
-        )
-        # EAR 저하 + (고개 OR 어깨) 중 하나라도 이상하면 졸음
-        if is_drowsy_ear and (is_drowsy_head or is_drowsy_shoulder):
+        if is_drowsy_ear and is_drowsy_head:
             return "drowsy"
 
-        # 집중 조건
-        gaze_ok = (abs(gaze_info["yaw_ratio"])   < GAZE_YAW_THRESH
-                   and abs(gaze_info["pitch_ratio"]) < GAZE_PITCH_THRESH)
-        head_ok = (head_info is None  # 고개 미감지 → 조건 면제
-                   or (abs(head_info["pitch"]) < HEAD_PITCH_THRESH
-                       and abs(head_info["yaw"])   < HEAD_YAW_THRESH))
-        shoulder_ok = (
-            posture_info is None                          # 미감지 → 조건 면제
-            or not posture_info.get("both_visible", False)
-            or abs(posture_info["shoulder_tilt_ratio"]) < SHOULDER_TILT_THRESH
-        )
-
-        return "focused" if (gaze_ok and head_ok and shoulder_ok) else "distracted"
+        # 집중/미집중: EMA 기반 (순간 노이즈 무시)
+        if focus_ema >= FOCUS_THRESH:
+            return "focused"
+        elif focus_ema < DISTRACT_THRESH:
+            return "distracted"
+        else:
+            # 중간 구간(0.35~0.55): 측정은 되지만 집중으로 전환 중
+            return "focusing"
 
     # ── 상태 전환 ─────────────────────────────────────────────────────────────
 
@@ -234,11 +252,17 @@ class FocusScorer:
         head_info    : gaze_estimator.estimate_head_pose() 결과
         posture_info : gaze_estimator.analyze_posture() 결과
         """
-        focus_score, gaze_score, head_score, shoulder_score = \
+        raw_focus, gaze_score, head_score, shoulder_score = \
             self._calc_focus(gaze_info, head_info, posture_info)
         fatigue_score, avg_ear = self._calc_fatigue(gaze_info)
-        candidate              = self._classify(gaze_info, head_info, posture_info, avg_ear)
-        status, confirm_ratio  = self._update_status(candidate)
+
+        # 집중도 EMA smoothing (순간 노이즈 제거)
+        self._focus_ema = ((1 - FOCUS_EMA_ALPHA) * self._focus_ema
+                           + FOCUS_EMA_ALPHA * raw_focus)
+        focus_score = self._focus_ema
+
+        candidate             = self._classify(gaze_info, head_info, avg_ear, focus_score)
+        status, confirm_ratio = self._update_status(candidate)
 
         return ScoreResult(
             focus_score    = focus_score,
@@ -256,3 +280,5 @@ class FocusScorer:
         self._status        = "uncertain"
         self._candidate     = "uncertain"
         self._confirm_count = 0
+        self._ear_ema       = None
+        self._focus_ema     = 0.5
