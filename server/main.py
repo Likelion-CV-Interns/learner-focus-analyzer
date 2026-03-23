@@ -19,10 +19,11 @@ import json
 import logging
 from collections import defaultdict
 from datetime import datetime
-from typing import Dict, Set
+from typing import Dict, Optional, Set
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from database import Database
 
@@ -52,6 +53,25 @@ db_buffer: Dict[str, list] = defaultdict(list)
 
 DB_FLUSH_INTERVAL = 5  # 초
 
+# user_id (UUID str) → {name, birth_date}  — WS 연결 시 빠른 이름 조회용 캐시
+users_cache: Dict[str, dict] = {}
+
+
+def _reload_users_cache():
+    global users_cache
+    rows = db.list_users()
+    users_cache = {row["user_id"]: row for row in rows}
+
+
+# ── Pydantic 모델 ──────────────────────────────────────────────────────────────
+
+class SessionCreateBody(BaseModel):
+    name: str  # 예: "Python 기초 · 3주차"
+
+class UserRegisterBody(BaseModel):
+    name: str
+    birth_date: str  # "YYYY-MM-DD"
+
 
 # ─── 유틸 ─────────────────────────────────────────────────────────────────────
 
@@ -71,8 +91,25 @@ async def broadcast(session_id: str, message: dict):
 
 @app.websocket("/ws/client/{session_id}/{user_id}")
 async def client_ws(websocket: WebSocket, session_id: str, user_id: str):
+    # session_id (UUID) 유효성 확인
+    if not db.get_session(session_id):
+        await websocket.accept()
+        await websocket.close(code=4404, reason="존재하지 않는 세션입니다. /api/sessions 로 먼저 생성하세요.")
+        logger.warning(f"[CLIENT 거부] 미등록 session_id={session_id}")
+        return
+
+    # user_id (UUID) → 등록된 학습자 정보 조회
+    user_info = users_cache.get(user_id)
+    if not user_info:
+        await websocket.accept()
+        await websocket.close(code=4403, reason="미등록 사용자입니다. /api/users 로 먼저 등록하세요.")
+        logger.warning(f"[CLIENT 거부] 미등록 user_id={user_id}")
+        return
+
+    user_name = user_info["name"]
+
     await websocket.accept()
-    logger.info(f"[CLIENT 연결] session={session_id}  user={user_id}")
+    logger.info(f"[CLIENT 연결] session={session_id}  user={user_id}  name={user_name}")
 
     try:
         while True:
@@ -80,7 +117,8 @@ async def client_ws(websocket: WebSocket, session_id: str, user_id: str):
             data: dict = json.loads(raw)
 
             # 서버 타임스탬프 & 메타 정보 주입
-            data["user_id"]    = user_id
+            data["user_id"]    = user_id    # 학습자 UUID (DB 저장용)
+            data["name"]       = user_name  # 학습자 이름 (프론트 표시용)
             data["session_id"] = session_id
             data["timestamp"]  = datetime.now().isoformat()
             data["connected"]  = True
@@ -89,7 +127,6 @@ async def client_ws(websocket: WebSocket, session_id: str, user_id: str):
             data.setdefault("head_pitch",       None)
             data.setdefault("head_yaw",         None)
             data.setdefault("emotion",          None)
-            data.setdefault("emotion_kr",       None)
             data.setdefault("phone_detected",   None)
             data.setdefault("phone_confidence", None)
 
@@ -158,12 +195,69 @@ async def get_summary(session_id: str):
     return {"session_id": session_id, "users": summary}
 
 
+@app.get("/api/sessions/{session_id}/users/{user_id}/records")
+async def get_user_records(session_id: str, user_id: str, limit: int = 500):
+    records = db.get_user_records(session_id, user_id, limit)
+    return {"session_id": session_id, "user_id": user_id, "count": len(records), "records": records}
+
+
+# ─── REST API: 세션 관리 ──────────────────────────────────────────────────────
+
+@app.post("/api/sessions", status_code=201)
+async def create_session(body: SessionCreateBody):
+    """강의 세션을 생성하고 session_id(UUID)를 반환합니다."""
+    row = db.create_session(body.name)
+    return row
+
+
+@app.get("/api/sessions")
+async def list_sessions():
+    return {"sessions": db.list_sessions()}
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_session(session_id: str):
+    session = db.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="존재하지 않는 세션입니다.")
+    return session
+
+
+# ─── REST API: 학습자 등록 ─────────────────────────────────────────────────────
+
+@app.post("/api/users", status_code=201)
+async def register_user(body: UserRegisterBody):
+    """
+    이름 + 생년월일로 학습자를 등록(또는 조회)합니다.
+    같은 이름+생년월일이면 기존 user_id를 반환합니다.
+    반환된 user_id를 WebSocket URL에 사용하세요:
+      ws://.../ws/client/{session_id}/{user_id}
+    """
+    row = db.upsert_user(body.name, body.birth_date)
+    _reload_users_cache()
+    return row
+
+
+@app.get("/api/users/{user_id}")
+async def get_user(user_id: str):
+    user = db.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="존재하지 않는 사용자입니다.")
+    return user
+
+
+@app.get("/api/users")
+async def list_users():
+    return {"users": db.list_users()}
+
+
 # ─── 백그라운드: 주기적 DB 저장 ───────────────────────────────────────────────
 
 @app.on_event("startup")
 async def startup():
+    _reload_users_cache()
     asyncio.create_task(_db_flush_loop())
-    logger.info("서버 시작 — DB flush 루프 시작")
+    logger.info("서버 시작 — users 캐시 로드 완료, DB flush 루프 시작")
 
 
 async def _db_flush_loop():

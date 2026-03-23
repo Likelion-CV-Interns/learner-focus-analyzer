@@ -4,6 +4,7 @@ import Navbar from './components/Navbar';
 import RealTimeMonitor from './components/RealTimeMonitor';
 import TotalEvaluation from './components/TotalEvaluation';
 import ManagerDashboard from './components/ManagerDashboard';
+import SessionStartPage from './components/SessionStartPage';
 import { NotificationToast, NotificationPanel } from './components/NotificationPanel';
 
 let notifIdCounter = 0;
@@ -21,6 +22,7 @@ const DEFAULT_TAB = {
 export default function App() {
   const [user, setUser] = useState(null);          // { role, name, id }
   const [activePage, setActivePage] = useState('');
+  const [activeSession, setActiveSession] = useState(null); // { session_id, name } — 강의자 전용
 
   const [notifications, setNotifications] = useState([]);
   const [toasts, setToasts] = useState([]);
@@ -34,6 +36,7 @@ export default function App() {
   const handleLogout = useCallback(() => {
     setUser(null);
     setActivePage('');
+    setActiveSession(null);
     setNotifications([]);
     setToasts([]);
   }, []);
@@ -98,12 +101,15 @@ export default function App() {
       {/* Page content */}
       <div style={{ flex: 1 }}>
 
-        {/* ── 강의자 전용: 실시간 모니터링 ── */}
+        {/* ── 강의자 전용: 세션 시작 or 실시간 모니터링 ── */}
         {user.role === 'instructor' && activePage === 'realtime' && (
-          <RealTimeMonitor
-            onNewNotification={addNotification}
-            monitoringTarget={{ sessionId: user.sessionId ?? 'sess_abc123', name: user.name, course: '' }}
-          />
+          activeSession
+            ? <RealTimeMonitor
+                onNewNotification={addNotification}
+                monitoringTarget={{ sessionId: activeSession.session_id, name: user.name, course: activeSession.name }}
+                onEndSession={() => setActiveSession(null)}
+              />
+            : <SessionStartPage user={user} onSessionStart={setActiveSession} />
         )}
 
         {/* ── 매니저 전용 ── */}
@@ -113,7 +119,7 @@ export default function App() {
 
         {/* ── 공통: 총 집중도 평가 ── */}
         {activePage === 'evaluation' && (
-          <TotalEvaluation user={user} />
+          <TotalEvaluation />
         )}
       </div>
     </div>

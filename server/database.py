@@ -53,11 +53,11 @@ class Database:
             with conn.cursor() as cur:
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS focus_records (
-                        id               SERIAL PRIMARY KEY,
-                        session_id       TEXT        NOT NULL,
-                        user_id          TEXT        NOT NULL,
-                        timestamp        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                        status           TEXT,
+                        id               BIGSERIAL PRIMARY KEY,
+                        session_id       VARCHAR(64)  NOT NULL,
+                        user_id          VARCHAR(64)  NOT NULL,
+                        timestamp        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                        status           VARCHAR(30),
                         focus_score      REAL,
                         fatigue_score    REAL,
                         avg_ear          REAL,
@@ -65,8 +65,7 @@ class Database:
                         gaze_pitch       REAL,
                         head_pitch       REAL,
                         head_yaw         REAL,
-                        emotion          TEXT,
-                        emotion_kr       TEXT,
+                        emotion          VARCHAR(30),
                         phone_detected   BOOLEAN,
                         phone_confidence REAL
                     )
@@ -75,16 +74,34 @@ class Database:
                     CREATE INDEX IF NOT EXISTS idx_session_ts
                     ON focus_records(session_id, timestamp DESC)
                 """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_user_ts
+                    ON focus_records(user_id, timestamp DESC)
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS sessions (
+                        session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        name       VARCHAR(200) NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        name       VARCHAR(100) NOT NULL,
+                        birth_date DATE NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE (name, birth_date)
+                    )
+                """)
                 # 기존 테이블에 컬럼이 없는 경우 추가 (마이그레이션)
                 for col_def in [
                     "head_pitch       REAL",
                     "head_yaw         REAL",
-                    "emotion          TEXT",
-                    "emotion_kr       TEXT",
+                    "emotion          VARCHAR(30)",
                     "phone_detected   BOOLEAN",
                     "phone_confidence REAL",
                 ]:
-                    col_name = col_def.split()[0]
                     cur.execute(f"""
                         DO $$ BEGIN
                             ALTER TABLE focus_records ADD COLUMN {col_def};
@@ -107,12 +124,12 @@ class Database:
                         (session_id, user_id, timestamp, status,
                          focus_score, fatigue_score, avg_ear, gaze_yaw, gaze_pitch,
                          head_pitch, head_yaw,
-                         emotion, emotion_kr, phone_detected, phone_confidence)
+                         emotion, phone_detected, phone_confidence)
                     VALUES (%(session_id)s, %(user_id)s, %(timestamp)s, %(status)s,
                             %(focus_score)s, %(fatigue_score)s, %(avg_ear)s,
                             %(gaze_yaw)s, %(gaze_pitch)s,
                             %(head_pitch)s, %(head_yaw)s,
-                            %(emotion)s, %(emotion_kr)s,
+                            %(emotion)s,
                             %(phone_detected)s, %(phone_confidence)s)
                     """,
                     records,
@@ -130,7 +147,7 @@ class Database:
                     SELECT user_id, timestamp, status,
                            focus_score, fatigue_score, avg_ear, gaze_yaw, gaze_pitch,
                            head_pitch, head_yaw,
-                           emotion, emotion_kr, phone_detected, phone_confidence
+                           emotion, phone_detected, phone_confidence
                     FROM focus_records
                     WHERE session_id = %s
                     ORDER BY timestamp DESC
@@ -142,26 +159,135 @@ class Database:
         finally:
             self._put(conn)
 
+    # ── sessions CRUD ───────────────────────────────────────────────────────────
+
+    def create_session(self, name: str) -> dict:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    INSERT INTO sessions (name)
+                    VALUES (%s)
+                    RETURNING session_id::text, name, created_at::text
+                """, (name,))
+                row = cur.fetchone()
+            conn.commit()
+            return dict(row)
+        finally:
+            self._put(conn)
+
+    def get_session(self, session_id: str) -> dict | None:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT session_id::text, name, created_at::text
+                    FROM sessions WHERE session_id = %s
+                """, (session_id,))
+                row = cur.fetchone()
+                return dict(row) if row else None
+        finally:
+            self._put(conn)
+
+    def list_sessions(self) -> list:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT session_id::text, name, created_at::text
+                    FROM sessions ORDER BY created_at DESC
+                """)
+                return [dict(row) for row in cur.fetchall()]
+        finally:
+            self._put(conn)
+
+    # ── users CRUD ──────────────────────────────────────────────────────────────
+
+    def upsert_user(self, name: str, birth_date: str) -> dict:
+        """이름+생년월일로 사용자를 찾거나 새로 생성한다. user_id(UUID)를 반환."""
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    INSERT INTO users (name, birth_date)
+                    VALUES (%s, %s)
+                    ON CONFLICT (name, birth_date) DO UPDATE SET name = EXCLUDED.name
+                    RETURNING user_id::text, name, birth_date::text, created_at::text
+                """, (name, birth_date))
+                row = cur.fetchone()
+            conn.commit()
+            return dict(row)
+        finally:
+            self._put(conn)
+
+    def get_user(self, user_id: str) -> dict | None:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT user_id::text, name, birth_date::text, created_at::text
+                    FROM users WHERE user_id = %s
+                """, (user_id,))
+                row = cur.fetchone()
+                return dict(row) if row else None
+        finally:
+            self._put(conn)
+
+    def list_users(self) -> list:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT user_id::text, name, birth_date::text, created_at::text
+                    FROM users ORDER BY name
+                """)
+                return [dict(row) for row in cur.fetchall()]
+        finally:
+            self._put(conn)
+
     def get_user_summary(self, session_id: str) -> list:
-        """유저별 평균 집중도·피로도 요약 (총 집중도 평가용)"""
+        """유저별 평균 집중도·피로도 요약 (총 집중도 평가용) — users 테이블과 조인해 name 포함"""
         conn = self._conn()
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
                     """
                     SELECT
-                        user_id,
+                        r.user_id,
+                        u.name,
                         COUNT(*)              AS sample_count,
-                        AVG(focus_score)      AS avg_focus,
-                        AVG(fatigue_score)    AS avg_fatigue,
-                        MIN(timestamp)        AS first_seen,
-                        MAX(timestamp)        AS last_seen
-                    FROM focus_records
-                    WHERE session_id = %s
-                    GROUP BY user_id
-                    ORDER BY user_id
+                        AVG(r.focus_score)    AS avg_focus,
+                        AVG(r.fatigue_score)  AS avg_fatigue,
+                        MIN(r.timestamp)      AS first_seen,
+                        MAX(r.timestamp)      AS last_seen
+                    FROM focus_records r
+                    LEFT JOIN users u ON u.user_id::text = r.user_id
+                    WHERE r.session_id = %s
+                    GROUP BY r.user_id, u.name
+                    ORDER BY u.name NULLS LAST
                     """,
                     (session_id,),
+                )
+                return [dict(row) for row in cur.fetchall()]
+        finally:
+            self._put(conn)
+
+    def get_user_records(self, session_id: str, user_id: str, limit: int = 500) -> list:
+        """특정 학습자의 세션 내 기록 — 시계열·감정·상태 분석용"""
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT timestamp, status, focus_score, fatigue_score,
+                           avg_ear, gaze_yaw, gaze_pitch,
+                           emotion, phone_detected
+                    FROM focus_records
+                    WHERE session_id = %s AND user_id = %s
+                    ORDER BY timestamp ASC
+                    LIMIT %s
+                    """,
+                    (session_id, user_id, limit),
                 )
                 return [dict(row) for row in cur.fetchall()]
         finally:

@@ -14,10 +14,11 @@ export const STUDENTS = [
 ];
 
 export const STATUS_CONFIG = {
-  focused:    { label: "집중",   color: "#22C55E", bg: "#F0FDF4" },
-  distracted: { label: "딴짓",   color: "#F59E0B", bg: "#FFFBEB" },
-  drowsy:     { label: "졸음",   color: "#EF4444", bg: "#FEF2F2" },
-  phone:      { label: "핸드폰", color: "#8B5CF6", bg: "#F5F3FF" },
+  focused:    { label: "집중",      color: "#22C55E", bg: "#F0FDF4" },
+  focusing:   { label: "집중 시작", color: "#84CC16", bg: "#F7FEE7" },
+  distracted: { label: "딴짓",      color: "#F59E0B", bg: "#FFFBEB" },
+  drowsy:     { label: "졸음",      color: "#EF4444", bg: "#FEF2F2" },
+  phone:      { label: "핸드폰",    color: "#8B5CF6", bg: "#F5F3FF" },
 };
 
 export function generateStudentState(id) {

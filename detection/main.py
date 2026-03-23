@@ -26,6 +26,8 @@ MediaPipe Holistic으로 다음 세 가지를 실시간 탐지한다.
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)   # mediapipe deprecated 경고 억제
 
+import json
+import urllib.request
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -58,11 +60,80 @@ SHOW_GAZE_GRAPH = True
 
 # ─── WebSocket 설정 ───────────────────────────────────────────────────────────
 # 서버가 없으면 WS_ENABLED = False 로 두면 됩니다.
-WS_ENABLED   = True
-WS_SERVER    = "ws://localhost:8000"
-WS_SESSION   = "sess_abc123"   # 어떤 세션에 데이터를 보낼지
-WS_USER_ID   = "cam1"          # 이 PC의 식별자 (여러 PC 구분)
-WS_SEND_INTERVAL = 0.1         # 전송 간격 (초)
+WS_ENABLED       = True
+WS_SERVER        = "ws://localhost:8000"
+API_SERVER       = "http://localhost:8000"   # REST API 서버 (WS_SERVER와 동일 호스트)
+WS_SEND_INTERVAL = 0.1                       # 전송 간격 (초)
+
+
+def _api_post(path: str, body: dict) -> dict:
+    payload = json.dumps(body).encode()
+    req = urllib.request.Request(
+        f"{API_SERVER}{path}",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        return json.loads(resp.read())
+
+
+def _api_get(path: str) -> dict:
+    with urllib.request.urlopen(f"{API_SERVER}{path}", timeout=5) as resp:
+        return json.loads(resp.read())
+
+
+def setup_session() -> str | None:
+    """강의 세션 UUID를 확정한다. 기존 세션에 참가하거나 목록에서 선택한다."""
+    print("\n" + "=" * 55)
+    print("  세션 선택")
+    print("=" * 55)
+    try:
+        data = _api_get("/api/sessions")
+        sessions = data.get("sessions", [])
+    except Exception as e:
+        print(f"  [경고] 세션 목록 조회 실패: {e}\n")
+        return None
+
+    if sessions:
+        print("  최근 세션 목록:")
+        for i, s in enumerate(sessions[:5], 1):
+            print(f"    {i}. {s['name']}  ({s['session_id'][:8]}...)")
+        print()
+
+    session_id = input("  세션 UUID 입력 (없으면 Enter → 목록 첫 번째 사용): ").strip()
+
+    if not session_id and sessions:
+        session_id = sessions[0]["session_id"]
+        print(f"  → {sessions[0]['name']} 세션 사용")
+
+    if not session_id:
+        print("  [경고] 사용 가능한 세션이 없습니다. 강의자가 먼저 세션을 생성해야 합니다.\n")
+        return None
+
+    print("=" * 55 + "\n")
+    return session_id
+
+
+def register_user() -> str | None:
+    """카메라 시작 전 이름·생년월일을 입력받아 user_id(UUID)를 반환한다.
+    동일한 이름+생년월일이면 기존 user_id를 재사용하므로 재접속 시에도 이력이 이어진다."""
+    print("=" * 55)
+    print("  학습자 등록")
+    print("=" * 55)
+    name       = input("  이름       : ").strip()
+    birth_date = input("  생년월일   (YYYY-MM-DD) : ").strip()
+    print("=" * 55)
+
+    try:
+        data = _api_post("/api/users", {"name": name, "birth_date": birth_date})
+        user_id = data["user_id"]
+        print(f"  [등록 완료] {name}  user_id: {user_id[:8]}...\n")
+        return user_id
+    except Exception as e:
+        print(f"  [경고] 서버 등록 실패: {e}")
+        print("  오프라인 모드로 시작합니다.\n")
+        return None
 
 # ─── Colab 설정 ───────────────────────────────────────────────────────────────
 # Colab에서 ngrok URL이 출력되면 아래에 붙여넣기
@@ -236,9 +307,14 @@ def main():
     # WebSocket sender 초기화
     ws_sender = None
     if WS_ENABLED:
-        ws_url = f"{WS_SERVER}/ws/client/{WS_SESSION}/{WS_USER_ID}"
-        ws_sender = WSSender(ws_url)
-        print(f"[WS] 전송 대상: {ws_url}")
+        session_id = setup_session()
+        user_id    = register_user() if session_id else None
+        if session_id and user_id:
+            ws_url = f"{WS_SERVER}/ws/client/{session_id}/{user_id}"
+            ws_sender = WSSender(ws_url)
+            print(f"[WS] 전송 대상: {ws_url}")
+        else:
+            print("[WS] 세션 또는 사용자 등록 실패 — 오프라인 모드로 시작합니다.")
 
     # Colab sender 초기화
     colab_sender = None

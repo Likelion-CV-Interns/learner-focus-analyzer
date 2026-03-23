@@ -6,24 +6,42 @@ import { STUDENTS, STATUS_CONFIG, generateStudentState, generateTimeSeries } fro
 
 const WS_SERVER = 'ws://localhost:8000';
 
-// cam_id → STUDENTS의 id 매핑 (실제 데이터를 어떤 학생에 덮어씌울지)
-const CAM_STUDENT_MAP = {
-  cam1: 1,   // cam1 데이터 → 학생 id 1번 (강지윤)
-  // cam2: 2,  // 카메라 추가 시 여기에 계속
+// 핸드폰 감지 후 기본 상태로 복귀하기까지의 시간 (초)
+const PHONE_DISPLAY_SEC = 5;
+
+const EMOTION_KR = {
+  engagement: '집중',
+  boredom:    '지루함',
+  confusion:  '혼란',
+  amused:     '웃음',
+  surprise:   '놀람',
+  neutral:    '중립',
 };
 
+
 // detection → server 데이터를 프론트 StudentState 형식으로 변환
-function toStudentState(data) {
-  const statusMap = { focused: 'focused', distracted: 'distracted', drowsy: 'drowsy', uncertain: 'distracted' };
-  // 핸드폰 감지 시 status를 'phone'으로 오버라이드
+// prevState: 이전 상태 (phoneLastDetected 인계용)
+function toStudentState(data, prevState = null) {
+  const statusMap = { focused: 'focused', focusing: 'focusing', distracted: 'distracted', drowsy: 'drowsy', uncertain: 'distracted' };
   const baseStatus = statusMap[data.status] ?? 'distracted';
-  const status = data.phone_detected ? 'phone' : baseStatus;
+
+  // 핸드폰 감지 시각 추적: 새로 감지됐으면 지금, 아니면 이전 감지 시각 유지
+  const phoneLastDetected = data.phone_detected
+    ? new Date()
+    : (prevState?.phoneLastDetected ?? null);
+
+  const phoneActive = phoneLastDetected &&
+    (Date.now() - phoneLastDetected.getTime() < PHONE_DISPLAY_SEC * 1000);
+
   return {
-    status,
+    name:             data.name ?? null,
+    status:           phoneActive ? 'phone' : baseStatus,
+    baseStatus,                                            // 복귀용 기본 상태
+    phoneLastDetected,                                     // 마지막 감지 시각
     focusScore:       Math.round((data.focus_score ?? 0) * 100),
     fatigueScore:     Math.round((data.fatigue_score ?? 0) * 100),
     eyeBlink:         Math.round((data.avg_ear ?? 0.25) * 100),
-    expression:       data.emotion_kr ?? null,   // Colab 표정 (한국어), 없으면 null
+    expression:       data.emotion ?? null,
     phoneDetected:    data.phone_detected ?? false,
     phoneConfidence:  data.phone_confidence ?? 0,
     lastUpdate:       new Date(data.timestamp ?? Date.now()),
@@ -114,8 +132,8 @@ function StudentCard({ student, state, onClick, selected }) {
         </div>
         <div style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 11, color: '#AAA' }}>표정</div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: state.phoneDetected ? '#8B5CF6' : '#444', marginTop: 2 }}>
-            {state.phoneDetected ? '📱' : (state.expression ?? '-')}
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#444', marginTop: 2 }}>
+            {(state.expression && EMOTION_KR[state.expression]) ?? state.expression ?? '-'}
           </div>
         </div>
       </div>
@@ -143,7 +161,7 @@ function StatCard({ label, value, sub, color, icon }) {
   );
 }
 
-export default function RealTimeMonitor({ onNewNotification, monitoringTarget }) {
+export default function RealTimeMonitor({ onNewNotification, monitoringTarget, onEndSession }) {
   const [states, setStates] = useState(() =>
     Object.fromEntries(STUDENTS.map(s => [s.id, generateStudentState(s.id)]))
   );
@@ -158,6 +176,30 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget })
   const wsRef = useRef(null);
 
   const sessionId = monitoringTarget?.sessionId;
+
+  // 핸드폰 상태 자동 복귀 타이머 (1초마다 체크)
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setWsStudents(prev => {
+        const now = Date.now();
+        let changed = false;
+        const next = {};
+        Object.entries(prev).forEach(([uid, state]) => {
+          if (state.status === 'phone' && state.phoneLastDetected) {
+            const elapsed = now - state.phoneLastDetected.getTime();
+            if (elapsed >= PHONE_DISPLAY_SEC * 1000) {
+              next[uid] = { ...state, status: state.baseStatus };
+              changed = true;
+              return;
+            }
+          }
+          next[uid] = state;
+        });
+        return changed ? next : prev;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -187,7 +229,7 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget })
           });
           setWsStudents(next);
         } else if (msg.type === 'user_update') {
-          setWsStudents(prev => ({ ...prev, [msg.user_id]: toStudentState(msg) }));
+          setWsStudents(prev => ({ ...prev, [msg.user_id]: toStudentState(msg, prev[msg.user_id]) }));
           // 집중도 추이 차트에도 포인트 추가
           setTimeSeries(prev => {
             const now = new Date();
@@ -224,17 +266,17 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget })
     };
   }, [sessionId]);
 
-  // 항상 STUDENTS 전체 표시. WS 데이터가 있는 학생만 실제 데이터로 덮어씌움
-  const mergedStates = Object.fromEntries(
-    STUDENTS.map(s => {
-      const camId = Object.entries(CAM_STUDENT_MAP).find(([, sid]) => sid === s.id)?.[0];
-      const wsState = camId ? wsStudents[camId] : undefined;
-      return [s.id, wsState ?? states[s.id]];
-    })
-  );
+  // WS에 실제 연결된 사용자가 있으면 그것만 표시, 없으면 mock STUDENTS로 fallback
+  const realUsers = Object.entries(wsStudents).map(([uid, state]) => ({
+    id:   uid,
+    name: state.name ?? uid,
+    seat: null,
+  }));
 
-  const displayStudents = STUDENTS;
-  const displayStates   = mergedStates;
+  const displayStudents = realUsers.length > 0 ? realUsers : STUDENTS;
+  const displayStates   = realUsers.length > 0
+    ? Object.fromEntries(realUsers.map(u => [u.id, wsStudents[u.id]]))
+    : Object.fromEntries(STUDENTS.map(s => [s.id, states[s.id]]));
 
   const allStateValues = Object.values(displayStates);
   const totalCount   = displayStudents.length || 1;
@@ -279,7 +321,7 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget })
       }
 
       // Boredom check
-      const boredCount = Object.values(next).filter(s => s.expression === 'bored').length;
+      const boredCount = Object.values(next).filter(s => s.expression === 'boredom').length;
       if (boredCount > STUDENTS.length / 2) {
         alerts.push({
           type: 'boredom',
@@ -374,6 +416,20 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget })
           >
             {isLive ? '⏸ 일시정지' : '▶ 재개'}
           </button>
+          {onEndSession && (
+            <button
+              onClick={() => {
+                if (window.confirm('방송을 종료하시겠습니까?')) onEndSession();
+              }}
+              style={{
+                padding: '8px 16px', borderRadius: 8, fontWeight: 700, fontSize: 13,
+                background: '#FEF2F2', color: '#EF4444',
+                border: '1.5px solid #FECACA', cursor: 'pointer',
+              }}
+            >
+              ⏹ 방송 종료
+            </button>
+          )}
         </div>
       </div>
 
@@ -505,7 +561,9 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget })
               </div>
               <div>
                 <div style={{ fontWeight: 700, fontSize: 16 }}>{selectedStudent.name}</div>
-                <div style={{ fontSize: 12, color: '#888' }}>좌석 {selectedStudent.seat}</div>
+                {selectedStudent.seat && (
+                  <div style={{ fontSize: 12, color: '#888' }}>좌석 {selectedStudent.seat}</div>
+                )}
                 <div style={{ marginTop: 4 }}><StatusBadge status={selectedState.status} /></div>
               </div>
             </div>

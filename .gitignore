@@ -38,11 +38,17 @@ screenshot_*.png
 !.env.example
 
 # ── React / Node ─────────────────────────────────
+node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/.env
 frontend/.env.*
 !frontend/.env.example
+frontend-learner/node_modules/
+frontend-learner/dist/
+frontend-learner/.env
+frontend-learner/.env.*
+!frontend-learner/.env.example
 
 # ── macOS ────────────────────────────────────────
 .DS_Store
