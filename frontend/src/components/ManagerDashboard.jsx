@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import RealTimeMonitor from './RealTimeMonitor';
 
-const API = 'http://localhost:8000';
+const API = 'http://34.10.223.135:8000';
 
 function formatTime(str) {
   if (!str) return '-';

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-const API = 'http://localhost:8000';
+const API = 'http://34.10.223.135:8000';
 
 const s = {
   wrap: {

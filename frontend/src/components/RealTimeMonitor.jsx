@@ -4,7 +4,7 @@ import {
 } from 'recharts';
 import { STUDENTS, STATUS_CONFIG, generateStudentState, generateTimeSeries } from '../utils/mockData';
 
-const WS_SERVER = 'ws://localhost:8000';
+const WS_SERVER = 'ws://34.10.223.135:8000';
 
 // 핸드폰 감지 후 기본 상태로 복귀하기까지의 시간 (초)
 const PHONE_DISPLAY_SEC = 5;

@@ -15,7 +15,7 @@ import {
   AI_FEEDBACK,
 } from '../utils/mockData';
 
-const API = 'http://localhost:8000';
+const API = 'http://34.10.223.135:8000';
 
 const EMOTION_KR = {
   engagement: '집중', boredom: '지루함', confusion: '혼란',
