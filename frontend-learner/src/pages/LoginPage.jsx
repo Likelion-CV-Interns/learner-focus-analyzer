@@ -85,7 +85,7 @@ export default function LoginPage({ onLogin }) {
               style={s.input}
               value={name}
               onChange={e => setName(e.target.value)}
-              placeholder="예: 강지윤"
+              placeholder="예: 홍길동"
               autoFocus
             />
           </div>
