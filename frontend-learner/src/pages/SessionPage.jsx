@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 
-const API = 'http://35.193.134.51:8000';
+const API = 'https://likelionfocus.duckdns.org';
 
 function formatDate(str) {
   if (!str) return '';
