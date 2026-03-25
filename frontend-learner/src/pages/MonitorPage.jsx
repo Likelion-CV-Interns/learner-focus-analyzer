@@ -3,7 +3,7 @@ import { initDetector, detect, isDetectorReady } from '../utils/detector.js';
 import { FocusScorer }  from '../utils/scorer.js';
 import { ColabSender }  from '../utils/colabSender.js';
 
-const WS_SERVER    = 'ws://34.10.223.135:8000';
+const WS_SERVER    = 'ws://35.193.134.51:8000';
 const COLAB_URL    = 'https://waylon-unfancy-overidly.ngrok-free.dev';           // 비어있으면 Colab 비활성화
 const WS_INTERVAL  = 100;         // ms (10fps)
 const PROC_INTERVAL = 33;         // ms (~30fps)

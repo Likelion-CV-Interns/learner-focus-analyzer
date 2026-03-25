@@ -15,7 +15,7 @@ function formatTime(date) {
 
 // Default start tab per role
 const DEFAULT_TAB = {
-  instructor: 'realtime',
+  instructor: 'live',
   manager: 'dashboard',
 };
 
@@ -101,8 +101,8 @@ export default function App() {
       {/* Page content */}
       <div style={{ flex: 1 }}>
 
-        {/* ── 강의자 전용: 세션 시작 or 실시간 모니터링 ── */}
-        {user.role === 'instructor' && activePage === 'realtime' && (
+        {/* ── 강의자 전용: 라이브 세션 시작 ── */}
+        {user.role === 'instructor' && activePage === 'live' && (
           activeSession
             ? <RealTimeMonitor
                 onNewNotification={addNotification}
