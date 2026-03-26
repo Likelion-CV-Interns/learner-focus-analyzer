@@ -94,6 +94,29 @@ class Database:
                         UNIQUE (name, birth_date)
                     )
                 """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS quizzes (
+                        quiz_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        session_id     UUID NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+                        question       TEXT NOT NULL,
+                        options        JSONB NOT NULL,
+                        correct_answer TEXT NOT NULL,
+                        order_num      INTEGER NOT NULL DEFAULT 1,
+                        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS quiz_submissions (
+                        id               BIGSERIAL PRIMARY KEY,
+                        session_id       VARCHAR(64) NOT NULL,
+                        user_id          VARCHAR(64) NOT NULL,
+                        quiz_id          VARCHAR(64) NOT NULL,
+                        submitted_answer TEXT NOT NULL,
+                        is_correct       BOOLEAN NOT NULL,
+                        submitted_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE (session_id, user_id, quiz_id)
+                    )
+                """)
                 # 기존 테이블에 컬럼이 없는 경우 추가 (마이그레이션)
                 for col_def in [
                     "head_pitch       REAL",
@@ -268,6 +291,99 @@ class Database:
                     """,
                     (session_id,),
                 )
+                return [dict(row) for row in cur.fetchall()]
+        finally:
+            self._put(conn)
+
+    # ── 퀴즈 CRUD ────────────────────────────────────────────────────────────────
+
+    def create_quiz(self, session_id: str, question: str, options: list, correct_answer: str, order_num: int) -> dict:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                import json as _json
+                cur.execute("""
+                    INSERT INTO quizzes (session_id, question, options, correct_answer, order_num)
+                    VALUES (%s, %s, %s::jsonb, %s, %s)
+                    RETURNING quiz_id::text, session_id::text, question, options, correct_answer, order_num
+                """, (session_id, question, _json.dumps(options, ensure_ascii=False), correct_answer, order_num))
+                row = cur.fetchone()
+            conn.commit()
+            return dict(row)
+        finally:
+            self._put(conn)
+
+    def get_quizzes(self, session_id: str) -> list:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT quiz_id::text, session_id::text, question, options, correct_answer, order_num
+                    FROM quizzes WHERE session_id = %s ORDER BY order_num ASC
+                """, (session_id,))
+                return [dict(row) for row in cur.fetchall()]
+        finally:
+            self._put(conn)
+
+    def delete_quiz(self, quiz_id: str):
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM quizzes WHERE quiz_id = %s", (quiz_id,))
+            conn.commit()
+        finally:
+            self._put(conn)
+
+    def submit_quiz(self, session_id: str, user_id: str, quiz_id: str, submitted_answer: str, is_correct: bool) -> dict:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    INSERT INTO quiz_submissions (session_id, user_id, quiz_id, submitted_answer, is_correct)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (session_id, user_id, quiz_id)
+                    DO UPDATE SET submitted_answer = EXCLUDED.submitted_answer,
+                                  is_correct = EXCLUDED.is_correct,
+                                  submitted_at = NOW()
+                    RETURNING id, is_correct
+                """, (session_id, user_id, quiz_id, submitted_answer, is_correct))
+                row = cur.fetchone()
+            conn.commit()
+            return dict(row)
+        finally:
+            self._put(conn)
+
+    def get_quiz_completion(self, session_id: str) -> list:
+        """세션의 유저별 퀴즈 완료율 반환"""
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT
+                        qs.user_id,
+                        u.name,
+                        COUNT(CASE WHEN qs.is_correct THEN 1 END) AS correct_count,
+                        COUNT(*) AS submitted_count,
+                        (SELECT COUNT(*) FROM quizzes WHERE session_id = %s) AS total_quizzes
+                    FROM quiz_submissions qs
+                    LEFT JOIN users u ON u.user_id::text = qs.user_id
+                    WHERE qs.session_id = %s
+                    GROUP BY qs.user_id, u.name
+                """, (session_id, session_id))
+                return [dict(row) for row in cur.fetchall()]
+        finally:
+            self._put(conn)
+
+    def get_user_quiz_submissions(self, session_id: str, user_id: str) -> list:
+        """특정 학습자의 퀴즈 제출 내역"""
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT quiz_id, submitted_answer, is_correct, submitted_at
+                    FROM quiz_submissions
+                    WHERE session_id = %s AND user_id = %s
+                """, (session_id, user_id))
                 return [dict(row) for row in cur.fetchall()]
         finally:
             self._put(conn)

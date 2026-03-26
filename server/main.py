@@ -17,9 +17,10 @@ REST 엔드포인트:
 import asyncio
 import json
 import logging
+import os
 from collections import defaultdict
 from datetime import datetime
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Set
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -66,11 +67,21 @@ def _reload_users_cache():
 # ── Pydantic 모델 ──────────────────────────────────────────────────────────────
 
 class SessionCreateBody(BaseModel):
-    name: str  # 예: "Python 기초 · 3주차"
+    name: str
 
 class UserRegisterBody(BaseModel):
     name: str
     birth_date: str  # "YYYY-MM-DD"
+
+class QuizCreateBody(BaseModel):
+    question: str
+    options: List[str]       # 4개 선택지
+    correct_answer: str      # 정답 (options 중 하나)
+    order_num: int = 1
+
+class QuizSubmitBody(BaseModel):
+    user_id: str
+    answer: str
 
 
 # ─── 유틸 ─────────────────────────────────────────────────────────────────────
@@ -249,6 +260,164 @@ async def get_user(user_id: str):
 @app.get("/api/users")
 async def list_users():
     return {"users": db.list_users()}
+
+
+# ─── REST API: 퀴즈 관리 ──────────────────────────────────────────────────────
+
+@app.get("/api/sessions/{session_id}/quizzes")
+async def get_quizzes(session_id: str):
+    quizzes = db.get_quizzes(session_id)
+    return {"session_id": session_id, "quizzes": quizzes}
+
+
+@app.post("/api/sessions/{session_id}/quizzes", status_code=201)
+async def create_quiz(session_id: str, body: QuizCreateBody):
+    if not db.get_session(session_id):
+        raise HTTPException(status_code=404, detail="존재하지 않는 세션입니다.")
+    if body.correct_answer not in body.options:
+        raise HTTPException(status_code=400, detail="정답이 선택지에 포함되어 있어야 합니다.")
+    quiz = db.create_quiz(session_id, body.question, body.options, body.correct_answer, body.order_num)
+    return quiz
+
+
+@app.delete("/api/sessions/{session_id}/quizzes/{quiz_id}", status_code=204)
+async def delete_quiz(session_id: str, quiz_id: str):
+    db.delete_quiz(quiz_id)
+
+
+@app.post("/api/sessions/{session_id}/quizzes/{quiz_id}/submit")
+async def submit_quiz(session_id: str, quiz_id: str, body: QuizSubmitBody):
+    quizzes = db.get_quizzes(session_id)
+    quiz = next((q for q in quizzes if q["quiz_id"] == quiz_id), None)
+    if not quiz:
+        raise HTTPException(status_code=404, detail="퀴즈를 찾을 수 없습니다.")
+    is_correct = body.answer.strip() == quiz["correct_answer"].strip()
+    result = db.submit_quiz(session_id, body.user_id, quiz_id, body.answer, is_correct)
+    return {"is_correct": result["is_correct"], "correct_answer": quiz["correct_answer"]}
+
+
+@app.get("/api/sessions/{session_id}/quiz-completion")
+async def get_quiz_completion(session_id: str):
+    completion = db.get_quiz_completion(session_id)
+    return {"session_id": session_id, "completion": completion}
+
+
+@app.get("/api/sessions/{session_id}/users/{user_id}/quiz-completion")
+async def get_user_quiz_completion(session_id: str, user_id: str):
+    quizzes   = db.get_quizzes(session_id)
+    submitted = db.get_user_quiz_submissions(session_id, user_id)
+    submitted_map = {s["quiz_id"]: s for s in submitted}
+    total     = len(quizzes)
+    correct   = sum(1 for s in submitted if s["is_correct"])
+    return {
+        "total": total,
+        "submitted": len(submitted),
+        "correct": correct,
+        "completion_rate": round(correct / total * 100) if total else 0,
+        "submissions": submitted_map,
+    }
+
+
+# ─── REST API: AI 총평 (Gemini) ────────────────────────────────────────────────
+
+@app.post("/api/sessions/{session_id}/ai-feedback")
+async def get_ai_feedback(session_id: str):
+    import google.generativeai as genai
+
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY 환경변수가 설정되지 않았습니다.")
+
+    session = db.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="존재하지 않는 세션입니다.")
+
+    records    = db.get_records(session_id, limit=2000)
+    summary    = db.get_user_summary(session_id)
+    completion = db.get_quiz_completion(session_id)
+
+    if not records:
+        raise HTTPException(status_code=400, detail="분석할 데이터가 없습니다.")
+
+    # 집중도/피로도 평균
+    focus_scores   = [r["focus_score"]   for r in records if r.get("focus_score")   is not None]
+    fatigue_scores = [r["fatigue_score"] for r in records if r.get("fatigue_score") is not None]
+    avg_focus   = round(sum(focus_scores)   / len(focus_scores)   * 100) if focus_scores   else 0
+    avg_fatigue = round(sum(fatigue_scores) / len(fatigue_scores) * 100) if fatigue_scores else 0
+
+    # 상태 분포
+    status_counts = {}
+    for r in records:
+        s = r.get("status")
+        if s: status_counts[s] = status_counts.get(s, 0) + 1
+    status_kr = {"focused":"집중","focusing":"집중시작","distracted":"딴짓","drowsy":"졸음","uncertain":"감지중","phone":"핸드폰"}
+    status_str = ", ".join(f"{status_kr.get(k,k)} {round(v/len(records)*100)}%" for k,v in sorted(status_counts.items(), key=lambda x:-x[1]))
+
+    # 표정 분포
+    emotion_counts = {}
+    for r in records:
+        e = r.get("emotion")
+        if e: emotion_counts[e] = emotion_counts.get(e, 0) + 1
+    emotion_kr = {"engagement":"집중","boredom":"지루함","confusion":"혼란","amused":"웃음","surprise":"놀람","neutral":"중립"}
+    emotion_total = sum(emotion_counts.values()) or 1
+    emotion_str = ", ".join(f"{emotion_kr.get(k,k)} {round(v/emotion_total*100)}%" for k,v in sorted(emotion_counts.items(), key=lambda x:-x[1]))
+
+    # 퀴즈 완료율
+    quiz_total = db.get_quizzes(session_id)
+    total_quiz_count = len(quiz_total)
+    avg_completion = 0
+    if completion and total_quiz_count:
+        avg_completion = round(sum(c["correct_count"] / total_quiz_count * 100 for c in completion) / len(completion))
+
+    # 수강생 수
+    student_count = len(summary)
+
+    prompt = f"""
+당신은 교육 전문가 AI입니다. 다음 강의 집중도 데이터를 분석하고 한국어로 강의 총평을 작성해주세요.
+
+[강의 정보]
+- 강의명: {session["name"]}
+- 참여 학습자 수: {student_count}명
+- 분석 데이터 수: {len(records)}개 샘플
+
+[집중도 분석]
+- 평균 집중도: {avg_focus}%
+- 평균 피로도: {avg_fatigue}%
+- 집중 상태 분포: {status_str}
+
+[표정 분석]
+- 표정 분포: {emotion_str}
+
+[실습 완료율]
+- 평균 퀴즈 완료율: {avg_completion}%
+
+다음 4가지 항목으로 나누어 각 2~3문장으로 작성해주세요:
+1. 전반적인 강의 평가
+2. 학습자 참여도 분석
+3. 개선이 필요한 부분
+4. 다음 강의를 위한 학습 전략 제안
+
+각 항목은 "1.", "2.", "3.", "4." 로 시작해주세요. 전문적이지만 친근한 톤으로 작성해주세요.
+"""
+
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    response = model.generate_content(prompt)
+    feedback_text = response.text
+
+    # 항목별 파싱
+    import re
+    sections = re.split(r'\n(?=\d+\.)', feedback_text.strip())
+    return {
+        "session_id":      session_id,
+        "session_name":    session["name"],
+        "avg_focus":       avg_focus,
+        "avg_fatigue":     avg_fatigue,
+        "avg_completion":  avg_completion,
+        "student_count":   student_count,
+        "feedback":        sections,
+        "raw":             feedback_text,
+    }
 
 
 # ─── 백그라운드: 주기적 DB 저장 ───────────────────────────────────────────────

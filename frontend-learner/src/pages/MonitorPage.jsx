@@ -26,20 +26,69 @@ export default function MonitorPage({ user, session, onLeave }) {
   const wsRef       = useRef(null);
   const scorerRef   = useRef(new FocusScorer());
   const colabRef    = useRef(null);
-  const latestRef   = useRef({});   // 최신 payload (WS 전송용)
+  const latestRef   = useRef({});
   const procTimerRef = useRef(null);
   const wsTimerRef   = useRef(null);
-
   const streamRef   = useRef(null);
 
   const [camReady,   setCamReady]   = useState(false);
   const [camOn,      setCamOn]      = useState(true);
   const [mpReady,    setMpReady]    = useState(false);
-  const [wsStatus,   setWsStatus]   = useState('disconnected'); // connected | disconnected | error
+  const [wsStatus,   setWsStatus]   = useState('disconnected');
   const [display,    setDisplay]    = useState({
     status: 'uncertain', focusScore: 0, fatigueScore: 0,
     avgEar: 0, emotion: null, phoneDetected: false,
   });
+
+  // ── 퀴즈 상태 ──────────────────────────────────────────────────────────────
+  const [quizzes,     setQuizzes]     = useState([]);
+  const [submissions, setSubmissions] = useState({});   // quiz_id → {is_correct, submitted_answer}
+  const [activeQuiz,  setActiveQuiz]  = useState(null); // 현재 펼쳐진 quiz_id
+  const [quizAnswer,  setQuizAnswer]  = useState('');
+  const [quizResult,  setQuizResult]  = useState(null); // {is_correct, correct_answer}
+  const [submitting,  setSubmitting]  = useState(false);
+
+  useEffect(() => {
+    if (!session?.session_id) return;
+    fetch(`${WS_SERVER.replace('wss', 'https').replace('ws', 'https')}/api/sessions/${session.session_id}/quizzes`)
+      .then(r => r.json())
+      .then(d => setQuizzes(d.quizzes ?? []))
+      .catch(() => {});
+    fetch(`${WS_SERVER.replace('wss', 'https').replace('ws', 'https')}/api/sessions/${session.session_id}/users/${user.user_id}/quiz-completion`)
+      .then(r => r.json())
+      .then(d => setSubmissions(d.submissions ?? {}))
+      .catch(() => {});
+  }, [session?.session_id, user?.user_id]);
+
+  const handleOpenQuiz = (quizId) => {
+    if (activeQuiz === quizId) { setActiveQuiz(null); setQuizResult(null); setQuizAnswer(''); return; }
+    setActiveQuiz(quizId);
+    setQuizAnswer('');
+    setQuizResult(null);
+  };
+
+  const handleSubmitQuiz = async (quiz) => {
+    if (!quizAnswer || submitting) return;
+    setSubmitting(true);
+    try {
+      const res = await fetch(
+        `${WS_SERVER.replace('wss', 'https').replace('ws', 'https')}/api/sessions/${session.session_id}/quizzes/${quiz.quiz_id}/submit`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: user.user_id, answer: quizAnswer }),
+        }
+      );
+      const data = await res.json();
+      setQuizResult(data);
+      setSubmissions(prev => ({ ...prev, [quiz.quiz_id]: { is_correct: data.is_correct, submitted_answer: quizAnswer } }));
+    } catch {} finally {
+      setSubmitting(false);
+    }
+  };
+
+  const correctCount = Object.values(submissions).filter(s => s.is_correct).length;
+  const completionRate = quizzes.length ? Math.round(correctCount / quizzes.length * 100) : 0;
 
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach(t => t.stop());
@@ -275,8 +324,9 @@ export default function MonitorPage({ user, session, onLeave }) {
           )}
         </div>
 
-        {/* 지표 패널 */}
-        <div style={{ width: 200, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {/* 오른쪽 패널: 지표 + 퀴즈 */}
+        <div style={{ width: 240, display: 'flex', flexDirection: 'column', gap: 10, overflowY: 'auto', maxHeight: 'calc(100vh - 80px)' }}>
+          {/* 지표 */}
           {[
             { label: '집중도',  value: `${display.focusScore}%`,   color: display.focusScore >= 60 ? '#22C55E' : display.focusScore >= 35 ? '#F59E0B' : '#EF4444' },
             { label: '피로도',  value: `${display.fatigueScore}%`, color: display.fatigueScore > 60 ? '#EF4444' : '#3B82F6' },
@@ -291,17 +341,13 @@ export default function MonitorPage({ user, session, onLeave }) {
             </div>
           ))}
 
-          <div style={{
-            background: '#1A1A1A', borderRadius: 12, padding: '14px',
-            border: '1px solid #2A2A2A',
-          }}>
+          <div style={{ background: '#1A1A1A', borderRadius: 12, padding: '14px', border: '1px solid #2A2A2A' }}>
             <div style={{ fontSize: 11, color: '#555', marginBottom: 6 }}>표정</div>
             <div style={{ fontSize: 16, fontWeight: 700, color: '#CCC' }}>
               {display.emotion ? (EMOTION_KR[display.emotion] ?? display.emotion) : '-'}
             </div>
           </div>
 
-          {/* 상태 배지 */}
           <div style={{
             background: cfg.bg + '22', borderRadius: 12, padding: '14px',
             border: `1.5px solid ${cfg.color}44`, textAlign: 'center',
@@ -309,6 +355,120 @@ export default function MonitorPage({ user, session, onLeave }) {
             <div style={{ fontSize: 11, color: '#555', marginBottom: 6 }}>현재 상태</div>
             <div style={{ fontSize: 15, fontWeight: 800, color: cfg.color }}>{cfg.label}</div>
           </div>
+
+          {/* 퀴즈 패널 */}
+          {quizzes.length > 0 && (
+            <div style={{ background: '#1A1A1A', borderRadius: 12, border: '1px solid #2A2A2A', overflow: 'hidden' }}>
+              {/* 헤더 */}
+              <div style={{ padding: '12px 14px', borderBottom: '1px solid #2A2A2A' }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#CCC', marginBottom: 4 }}>실습 퀴즈</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ flex: 1, height: 4, background: '#2A2A2A', borderRadius: 4, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${completionRate}%`, background: '#22C55E', borderRadius: 4, transition: 'width 0.4s' }} />
+                  </div>
+                  <span style={{ fontSize: 11, color: '#22C55E', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                    {correctCount}/{quizzes.length}
+                  </span>
+                </div>
+              </div>
+
+              {/* 퀴즈 목록 */}
+              <div style={{ padding: '8px' }}>
+                {quizzes.map((quiz, i) => {
+                  const sub = submissions[quiz.quiz_id];
+                  const isOpen = activeQuiz === quiz.quiz_id;
+                  const isDone = sub != null;
+                  return (
+                    <div key={quiz.quiz_id} style={{ marginBottom: 4 }}>
+                      {/* 퀴즈 항목 버튼 */}
+                      <button
+                        onClick={() => handleOpenQuiz(quiz.quiz_id)}
+                        style={{
+                          width: '100%', textAlign: 'left', padding: '8px 10px',
+                          background: isOpen ? '#252525' : 'transparent',
+                          border: 'none', borderRadius: 8, cursor: 'pointer',
+                          display: 'flex', alignItems: 'center', gap: 8,
+                        }}
+                      >
+                        <span style={{
+                          width: 20, height: 20, borderRadius: '50%', flexShrink: 0,
+                          background: isDone ? (sub.is_correct ? '#22C55E' : '#EF4444') : '#2A2A2A',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: 10, fontWeight: 800, color: isDone ? '#fff' : '#555',
+                        }}>
+                          {isDone ? (sub.is_correct ? '✓' : '✗') : i + 1}
+                        </span>
+                        <span style={{
+                          fontSize: 11, color: isDone ? (sub.is_correct ? '#22C55E' : '#EF4444') : '#AAA',
+                          flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}>
+                          Q{i + 1}. {quiz.question}
+                        </span>
+                      </button>
+
+                      {/* 펼쳐진 퀴즈 */}
+                      {isOpen && (
+                        <div style={{ padding: '8px 10px 10px', background: '#1E1E1E', borderRadius: 8, marginTop: 2 }}>
+                          <div style={{ fontSize: 12, color: '#DDD', marginBottom: 10, lineHeight: 1.5 }}>
+                            {quiz.question}
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 10 }}>
+                            {(quiz.options ?? []).map((opt, j) => (
+                              <button
+                                key={j}
+                                onClick={() => !isDone && setQuizAnswer(opt)}
+                                disabled={isDone}
+                                style={{
+                                  padding: '7px 10px', borderRadius: 6, textAlign: 'left',
+                                  fontSize: 11, cursor: isDone ? 'default' : 'pointer',
+                                  border: `1.5px solid ${
+                                    isDone && opt === sub.submitted_answer
+                                      ? (sub.is_correct ? '#22C55E' : '#EF4444')
+                                      : quizAnswer === opt ? '#FF6B2B' : '#2A2A2A'
+                                  }`,
+                                  background: isDone && opt === sub.submitted_answer
+                                    ? (sub.is_correct ? '#0D2918' : '#2D1010')
+                                    : quizAnswer === opt ? '#2A1500' : 'transparent',
+                                  color: isDone && opt === sub.submitted_answer
+                                    ? (sub.is_correct ? '#22C55E' : '#EF4444')
+                                    : quizAnswer === opt ? '#FF6B2B' : '#888',
+                                }}
+                              >
+                                {opt}
+                              </button>
+                            ))}
+                          </div>
+                          {!isDone ? (
+                            <button
+                              onClick={() => handleSubmitQuiz(quiz)}
+                              disabled={!quizAnswer || submitting}
+                              style={{
+                                width: '100%', padding: '7px', borderRadius: 6, border: 'none',
+                                background: !quizAnswer || submitting ? '#2A2A2A' : '#FF6B2B',
+                                color: !quizAnswer || submitting ? '#555' : '#fff',
+                                fontSize: 11, fontWeight: 700, cursor: !quizAnswer || submitting ? 'not-allowed' : 'pointer',
+                              }}
+                            >
+                              {submitting ? '제출 중...' : '제출하기'}
+                            </button>
+                          ) : (
+                            <div style={{
+                              padding: '6px 10px', borderRadius: 6, textAlign: 'center',
+                              background: sub.is_correct ? '#0D2918' : '#2D1010',
+                              fontSize: 11, fontWeight: 700,
+                              color: sub.is_correct ? '#22C55E' : '#EF4444',
+                            }}>
+                              {sub.is_correct ? '✓ 정답입니다!' : '✗ 오답입니다'}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
