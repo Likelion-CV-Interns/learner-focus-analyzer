@@ -401,7 +401,7 @@ async def get_ai_feedback(session_id: str):
 """
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-1.5-flash-latest")
     response = model.generate_content(prompt)
     feedback_text = response.text
 
