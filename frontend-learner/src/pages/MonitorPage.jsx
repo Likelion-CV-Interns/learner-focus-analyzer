@@ -114,14 +114,16 @@ export default function MonitorPage({ user, session, onLeave }) {
     const result = detect(video, performance.now());
     if (!result) return;
 
-    const { ear, gaze, head, emotion } = result;
+    const { ear, gaze, head, emotion: localEmotion } = result;
     const scored = scorerRef.current.update(gaze, ear, head);
 
-    // Colab 전송 (phone detection)
+    // Colab 전송 (phone detection + 표정 분석)
     if (colabRef.current) colabRef.current.push(video);
-    const colabResult  = colabRef.current?.result ?? {};
+    const colabResult   = colabRef.current?.result ?? {};
     const phoneDetected = colabResult.phone_detected ?? false;
     const phoneConf     = colabResult.phone_confidence ?? 0;
+    // Colab RF 모델 표정 우선, 연결 전이면 로컬 MediaPipe fallback
+    const emotion = colabResult.emotion ?? localEmotion;
 
     const payload = {
       ...scored,
