@@ -30,7 +30,10 @@ export default function MonitorPage({ user, session, onLeave }) {
   const procTimerRef = useRef(null);
   const wsTimerRef   = useRef(null);
 
+  const streamRef   = useRef(null);
+
   const [camReady,   setCamReady]   = useState(false);
+  const [camOn,      setCamOn]      = useState(true);
   const [mpReady,    setMpReady]    = useState(false);
   const [wsStatus,   setWsStatus]   = useState('disconnected'); // connected | disconnected | error
   const [display,    setDisplay]    = useState({
@@ -38,22 +41,35 @@ export default function MonitorPage({ user, session, onLeave }) {
     avgEar: 0, emotion: null, phoneDetected: false,
   });
 
-  // ── 1. 카메라 ──────────────────────────────────────────────────────────────
-  useEffect(() => {
+  const stopCamera = useCallback(() => {
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    setCamReady(false);
+    setCamOn(false);
+  }, []);
+
+  const startCamera = useCallback(() => {
     navigator.mediaDevices.getUserMedia({ video: true, audio: false })
       .then(stream => {
+        streamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           videoRef.current.onloadedmetadata = () => {
             videoRef.current.play();
             setCamReady(true);
+            setCamOn(true);
           };
         }
       })
       .catch(err => console.error('[Camera]', err));
+  }, []);
 
+  // ── 1. 카메라 ──────────────────────────────────────────────────────────────
+  useEffect(() => {
+    startCamera();
     return () => {
-      videoRef.current?.srcObject?.getTracks().forEach(t => t.stop());
+      streamRef.current?.getTracks().forEach(t => t.stop());
     };
   }, []);
 
@@ -183,8 +199,21 @@ export default function MonitorPage({ user, session, onLeave }) {
           }}>
             {mpReady ? 'AI 감지 중' : 'AI 로딩...'}
           </div>
+          {/* 카메라 토글 */}
           <button
-            onClick={onLeave}
+            onClick={() => camOn ? stopCamera() : startCamera()}
+            style={{
+              padding: '5px 12px', borderRadius: 8, fontSize: 12, cursor: 'pointer',
+              border: `1px solid ${camOn ? '#22C55E' : '#EF4444'}`,
+              background: camOn ? '#0D2918' : '#2D1010',
+              color: camOn ? '#22C55E' : '#EF4444',
+              fontWeight: 700,
+            }}
+          >
+            {camOn ? '📷 카메라 끄기' : '📷 카메라 켜기'}
+          </button>
+          <button
+            onClick={() => { stopCamera(); onLeave(); }}
             style={{
               padding: '5px 12px', borderRadius: 8,
               border: '1px solid #444', background: '#2A2A2A',
@@ -215,8 +244,10 @@ export default function MonitorPage({ user, session, onLeave }) {
               position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
               alignItems: 'center', justifyContent: 'center', background: '#111',
             }}>
-              <div style={{ fontSize: 36, marginBottom: 12 }}>📷</div>
-              <div style={{ color: '#888', fontSize: 14 }}>카메라 연결 중...</div>
+              <div style={{ fontSize: 36, marginBottom: 12 }}>{camOn ? '📷' : '🚫'}</div>
+              <div style={{ color: '#888', fontSize: 14 }}>
+                {camOn ? '카메라 연결 중...' : '카메라가 꺼져 있습니다'}
+              </div>
             </div>
           )}
           {/* Status overlay */}

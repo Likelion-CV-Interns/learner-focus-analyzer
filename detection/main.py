@@ -384,6 +384,7 @@ def main():
             # Colab 모델 결과 병합 (expression, phone_detected 등)
             if colab_sender and colab_sender.result:
                 payload.update(colab_sender.result)
+            print(f"[WS PAYLOAD] phone_detected={payload.get('phone_detected')}")  # ← 추가
             ws_sender.send(payload)
 
 
