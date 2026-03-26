@@ -4,16 +4,7 @@ import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
-
-const EMOTION_COLORS = {
-  engagement: '#FF6B2B', boredom: '#8B5CF6', confusion: '#F59E0B',
-  amused:     '#22C55E', surprise: '#3B82F6', neutral:   '#94A3B8',
-};
-import {
-  generateLectureFocusSeries,
-  generateExpressionData,
-  AI_FEEDBACK,
-} from '../utils/mockData';
+// BarChart/Bar/Cell은 집중 상태 분포에서 계속 사용
 
 const API = 'https://likelionfocus.duckdns.org';
 
@@ -53,21 +44,18 @@ function processTimeSeries(records) {
   }));
 }
 
-/** records → 표정 바 차트 [{subject, key, A}] (비율 %) */
+/** records → 표정 레이더 차트 [{subject, key, A}] (비율 %) — 6각형 유지를 위해 전체 감정 포함 */
 function processEmotions(records) {
   const counts = {};
   for (const r of records) {
     if (r.emotion) counts[r.emotion] = (counts[r.emotion] ?? 0) + 1;
   }
   const total = Object.values(counts).reduce((a, b) => a + b, 0) || 1;
-  return Object.entries(EMOTION_KR)
-    .map(([key, label]) => ({
-      subject: label,
-      key,
-      A: Math.round(((counts[key] ?? 0) / total) * 100),
-    }))
-    .filter(d => d.A > 0)  // 0%인 감정은 제외해 차트를 간결하게
-    .sort((a, b) => b.A - a.A);
+  return Object.entries(EMOTION_KR).map(([key, label]) => ({
+    subject: label,
+    key,
+    A: Math.round(((counts[key] ?? 0) / total) * 100),
+  }));
 }
 
 /** records → 집중 상태 분포 [{name, 비율, color}] */
@@ -117,84 +105,211 @@ function EmptyState({ message }) {
   );
 }
 
-// ── 전체 리포트 (mock 유지) ─────────────────────────────────────────────────────
+// ── 전체 리포트 (실제 DB 데이터) ──────────────────────────────────────────────
 
-function ClassReport() {
-  const focusSeries   = useMemo(generateLectureFocusSeries, []);
-  const expressionData = useMemo(generateExpressionData, []);
+function ClassReport({ sessionId }) {
+  const [records,    setRecords]    = useState([]);
+  const [completion, setCompletion] = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [aiFeedback, setAiFeedback] = useState(null);
+  const [aiLoading,  setAiLoading]  = useState(false);
+  const [aiError,    setAiError]    = useState('');
+
+  useEffect(() => {
+    if (!sessionId) return;
+    setLoading(true);
+    setAiFeedback(null);
+    Promise.all([
+      fetch(`${API}/api/sessions/${sessionId}/records?limit=2000`).then(r => r.json()),
+      fetch(`${API}/api/sessions/${sessionId}/quiz-completion`).then(r => r.json()),
+    ]).then(([recData, compData]) => {
+      setRecords(recData.records ?? []);
+      setCompletion(compData.completion ?? []);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, [sessionId]);
+
+  const timeSeries  = useMemo(() => processTimeSeries(records), [records]);
+  const emotionData = useMemo(() => processEmotions(records),   [records]);
+
+  // 실습 완료율 계산
+  const quizStats = useMemo(() => {
+    if (!completion.length) return null;
+    const avgRate = Math.round(
+      completion.reduce((sum, c) => sum + (c.total_quizzes > 0 ? (c.correct_count / c.total_quizzes) * 100 : 0), 0)
+      / completion.length
+    );
+    return { avgRate, students: completion };
+  }, [completion]);
+
+  const handleAiFeedback = async () => {
+    setAiLoading(true);
+    setAiError('');
+    try {
+      const res = await fetch(`${API}/api/sessions/${sessionId}/ai-feedback`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail ?? 'AI 분석 실패');
+      }
+      setAiFeedback(await res.json());
+    } catch (e) {
+      setAiError(e.message);
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  if (loading) return <Card><EmptyState message="데이터 불러오는 중..." /></Card>;
+  if (records.length === 0) return <Card><EmptyState message="이 세션에 기록된 데이터가 없습니다." /></Card>;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {/* 시계열 집중도 */}
       <Card>
-        <SectionTitle title="시계열 집중도 추이" sub="강의 시간 동안 전체 학습자의 집중도 및 피로도 변화 (데모)" />
-        <ResponsiveContainer width="100%" height={240}>
-          <AreaChart data={focusSeries} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
-            <defs>
-              <linearGradient id="gradFocus" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%"  stopColor="#FF6B2B" stopOpacity={0.2} />
-                <stop offset="95%" stopColor="#FF6B2B" stopOpacity={0} />
-              </linearGradient>
-              <linearGradient id="gradFatigue" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%"  stopColor="#8B5CF6" stopOpacity={0.15} />
-                <stop offset="95%" stopColor="#8B5CF6" stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
-            <XAxis dataKey="time" tick={{ fontSize: 10, fill: '#AAA' }} />
-            <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#AAA' }} />
-            <Tooltip contentStyle={{ borderRadius: 8, fontSize: 12 }} />
-            <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Area type="monotone" dataKey="전체 집중도" stroke="#FF6B2B" fill="url(#gradFocus)" strokeWidth={2.5} name="집중도 (%)" />
-            <Area type="monotone" dataKey="피로도"     stroke="#8B5CF6" fill="url(#gradFatigue)" strokeWidth={2} name="피로도 (%)" />
-          </AreaChart>
-        </ResponsiveContainer>
+        <SectionTitle title="시계열 집중도 추이" sub="강의 시간 동안 전체 학습자의 집중도 및 피로도 변화" />
+        {timeSeries.length < 2 ? (
+          <EmptyState message="시계열 데이터가 부족합니다 (최소 2분 이상 필요)" />
+        ) : (
+          <ResponsiveContainer width="100%" height={240}>
+            <AreaChart data={timeSeries} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
+              <defs>
+                <linearGradient id="gradFocus" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%"  stopColor="#FF6B2B" stopOpacity={0.2} />
+                  <stop offset="95%" stopColor="#FF6B2B" stopOpacity={0} />
+                </linearGradient>
+                <linearGradient id="gradFatigue" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%"  stopColor="#8B5CF6" stopOpacity={0.15} />
+                  <stop offset="95%" stopColor="#8B5CF6" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
+              <XAxis dataKey="time" tick={{ fontSize: 10, fill: '#AAA' }} />
+              <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#AAA' }} />
+              <Tooltip contentStyle={{ borderRadius: 8, fontSize: 12 }} />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              <Area type="monotone" dataKey="집중도" stroke="#FF6B2B" fill="url(#gradFocus)"   strokeWidth={2.5} name="집중도 (%)" />
+              <Area type="monotone" dataKey="피로도" stroke="#8B5CF6" fill="url(#gradFatigue)" strokeWidth={2}   name="피로도 (%)" />
+            </AreaChart>
+          </ResponsiveContainer>
+        )}
       </Card>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+        {/* 표정 분석 */}
         <Card>
-          <SectionTitle title="표정 분석 결과" sub="강의 중 감지된 학습자 표정 분포 (데모)" />
-          <ResponsiveContainer width="100%" height={220}>
-            <RadarChart data={expressionData} margin={{ top: 10, right: 30, bottom: 10, left: 30 }}>
+          <SectionTitle title="표정 분석 결과" sub="강의 중 전체 학습자의 표정 분포" />
+          <ResponsiveContainer width="100%" height={260}>
+            <RadarChart data={emotionData} margin={{ top: 10, right: 30, bottom: 10, left: 30 }}>
               <PolarGrid stroke="#F0F0F0" />
               <PolarAngleAxis dataKey="subject" tick={{ fontSize: 12, fill: '#555' }} />
               <Radar name="표정" dataKey="A" stroke="#FF6B2B" fill="#FF6B2B" fillOpacity={0.3} strokeWidth={2} />
-              <Tooltip contentStyle={{ borderRadius: 8, fontSize: 12 }} />
+              <Tooltip formatter={v => [`${v}%`, '비율']} contentStyle={{ borderRadius: 8, fontSize: 12 }} />
             </RadarChart>
           </ResponsiveContainer>
         </Card>
 
+        {/* 실습 완료율 */}
         <Card>
-          <SectionTitle title="실습 완료율" sub="학습자별 실습 과제 완료 현황 (데모)" />
-          <div style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            height: 180, color: '#CCC', fontSize: 13, flexDirection: 'column', gap: 8,
-          }}>
-            <span style={{ fontSize: 32 }}>🚧</span>
-            <span>실습 완료율 연동 준비 중</span>
-          </div>
+          <SectionTitle title="실습 완료율" sub="학습자별 퀴즈 정답 완료율" />
+          {!quizStats ? (
+            <EmptyState message="퀴즈 데이터 없음" />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+              {/* 전체 평균 */}
+              <div style={{ textAlign: 'center', padding: '12px 0 16px' }}>
+                <div style={{ fontSize: 36, fontWeight: 800, color: quizStats.avgRate >= 70 ? '#22C55E' : quizStats.avgRate >= 40 ? '#F59E0B' : '#EF4444' }}>
+                  {quizStats.avgRate}%
+                </div>
+                <div style={{ fontSize: 12, color: '#AAA', marginTop: 2 }}>전체 평균 완료율</div>
+              </div>
+              {/* 학습자별 */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 160, overflowY: 'auto' }}>
+                {quizStats.students.map(s => {
+                  const rate = s.total_quizzes > 0 ? Math.round((s.correct_count / s.total_quizzes) * 100) : 0;
+                  return (
+                    <div key={s.user_id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div style={{ fontSize: 12, color: '#555', width: 70, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {s.name ?? s.user_id.slice(0, 6)}
+                      </div>
+                      <div style={{ flex: 1, height: 6, background: '#F0F0F0', borderRadius: 4, overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: `${rate}%`, background: rate >= 70 ? '#22C55E' : rate >= 40 ? '#F59E0B' : '#EF4444', borderRadius: 4 }} />
+                      </div>
+                      <div style={{ fontSize: 11, color: '#888', width: 32, textAlign: 'right', flexShrink: 0 }}>{rate}%</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </Card>
       </div>
 
+      {/* AI 총평 */}
       <Card>
-        <SectionTitle title="AI 강의 총평" sub="집중도 데이터를 기반으로 생성된 강의 피드백 (데모)" />
-        <div style={{
-          background: 'linear-gradient(135deg, #FFF5F0, #FFF8F5)',
-          borderRadius: 12, padding: 20, border: '1px solid #FFD5C0',
-        }}>
-          <div style={{ display: 'flex', gap: 10, marginBottom: 12 }}>
-            <span style={{ fontSize: 22 }}>🤖</span>
-            <span style={{ fontSize: 13, fontWeight: 700, color: '#FF6B2B' }}>AI 분석 리포트</span>
-          </div>
-          {AI_FEEDBACK.map((text, i) => (
-            <div key={i} style={{
-              fontSize: 13, color: '#444', lineHeight: 1.7,
-              marginBottom: i < AI_FEEDBACK.length - 1 ? 12 : 0,
-              paddingLeft: 12, borderLeft: '3px solid #FFD5C0',
-            }}>
-              {text}
-            </div>
-          ))}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
+          <SectionTitle title="AI 강의 총평" sub="실제 집중도 데이터를 기반으로 Gemini가 생성한 강의 피드백" />
+          <button
+            onClick={handleAiFeedback}
+            disabled={aiLoading}
+            style={{
+              padding: '8px 16px', borderRadius: 8, border: 'none', fontSize: 12,
+              background: aiLoading ? '#FFD0B8' : 'linear-gradient(135deg, #FF6B2B, #FF8C55)',
+              color: '#fff', fontWeight: 700, cursor: aiLoading ? 'not-allowed' : 'pointer',
+              whiteSpace: 'nowrap', flexShrink: 0,
+            }}
+          >
+            {aiLoading ? '분석 중...' : aiFeedback ? '재분석' : '🤖 AI 분석 시작'}
+          </button>
         </div>
+
+        {aiError && (
+          <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#DC2626', marginBottom: 12 }}>
+            {aiError}
+          </div>
+        )}
+
+        {!aiFeedback && !aiLoading && !aiError && (
+          <div style={{ textAlign: 'center', padding: '32px 0', color: '#CCC', fontSize: 13 }}>
+            AI 분석 시작 버튼을 눌러 강의 총평을 받아보세요
+          </div>
+        )}
+
+        {aiLoading && (
+          <div style={{ textAlign: 'center', padding: '32px 0', color: '#AAA', fontSize: 13 }}>
+            Gemini가 데이터를 분석하고 있습니다...
+          </div>
+        )}
+
+        {aiFeedback && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {/* 요약 수치 */}
+            <div style={{ display: 'flex', gap: 12, marginBottom: 4 }}>
+              {[
+                { label: '평균 집중도', value: `${aiFeedback.avg_focus}%`, color: '#FF6B2B' },
+                { label: '평균 피로도', value: `${aiFeedback.avg_fatigue}%`, color: '#8B5CF6' },
+                { label: '참여 학생', value: `${aiFeedback.student_count}명`, color: '#3B82F6' },
+                { label: '퀴즈 완료율', value: `${aiFeedback.avg_completion}%`, color: '#22C55E' },
+              ].map(item => (
+                <div key={item.label} style={{ flex: 1, background: '#FAFAFA', borderRadius: 10, padding: '10px 12px', textAlign: 'center', border: '1px solid #EEE' }}>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: item.color }}>{item.value}</div>
+                  <div style={{ fontSize: 10, color: '#AAA', marginTop: 2 }}>{item.label}</div>
+                </div>
+              ))}
+            </div>
+            {/* 피드백 항목 */}
+            <div style={{ background: 'linear-gradient(135deg, #FFF5F0, #FFF8F5)', borderRadius: 12, padding: 20, border: '1px solid #FFD5C0' }}>
+              <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
+                <span style={{ fontSize: 20 }}>🤖</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#FF6B2B' }}>Gemini AI 분석 리포트</span>
+              </div>
+              {aiFeedback.feedback.map((text, i) => (
+                <div key={i} style={{ fontSize: 13, color: '#444', lineHeight: 1.75, marginBottom: i < aiFeedback.feedback.length - 1 ? 14 : 0, paddingLeft: 14, borderLeft: '3px solid #FFD5C0' }}>
+                  {text}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </Card>
     </div>
   );
@@ -295,30 +410,16 @@ function StudentReport({ sessionId, userId, userName, avgFocus, avgFatigue }) {
             {/* 표정 분석 */}
             <Card>
               <SectionTitle title="표정 분석 결과" sub="강의 중 감지된 표정 분포 (실제 데이터)" />
-              {emotionData.length === 0 ? (
+              {emotionData.every(d => d.A === 0) ? (
                 <EmptyState message="표정 데이터 없음" />
               ) : (
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart
-                    data={emotionData}
-                    layout="vertical"
-                    margin={{ top: 5, right: 50, bottom: 5, left: 40 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" horizontal={false} />
-                    <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 10, fill: '#AAA' }}
-                           tickFormatter={v => `${v}%`} />
-                    <YAxis dataKey="subject" type="category" tick={{ fontSize: 11, fill: '#555' }} width={40} />
-                    <Tooltip
-                      formatter={(v) => [`${v}%`, '비율']}
-                      contentStyle={{ borderRadius: 8, fontSize: 12 }}
-                    />
-                    <Bar dataKey="A" radius={[0, 4, 4, 0]}
-                         label={{ position: 'right', fontSize: 11, fill: '#888', formatter: v => `${v}%` }}>
-                      {emotionData.map((entry, i) => (
-                        <Cell key={i} fill={EMOTION_COLORS[entry.key] ?? '#CCC'} />
-                      ))}
-                    </Bar>
-                  </BarChart>
+                <ResponsiveContainer width="100%" height={240}>
+                  <RadarChart data={emotionData} margin={{ top: 10, right: 30, bottom: 10, left: 30 }}>
+                    <PolarGrid stroke="#F0F0F0" />
+                    <PolarAngleAxis dataKey="subject" tick={{ fontSize: 12, fill: '#555' }} />
+                    <Radar name="표정" dataKey="A" stroke="#FF6B2B" fill="#FF6B2B" fillOpacity={0.3} strokeWidth={2} />
+                    <Tooltip formatter={v => [`${v}%`, '비율']} contentStyle={{ borderRadius: 8, fontSize: 12 }} />
+                  </RadarChart>
                 </ResponsiveContainer>
               )}
             </Card>
@@ -507,7 +608,7 @@ export default function TotalEvaluation() {
 
       {/* 리포트 본문 */}
       {viewMode === 'class' ? (
-        <ClassReport />
+        <ClassReport sessionId={selectedSessionId} />
       ) : (
         selectedUserId && selectedUser ? (
           <StudentReport
