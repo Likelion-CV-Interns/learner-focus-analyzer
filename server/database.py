@@ -272,6 +272,19 @@ class Database:
         del instructor["password_hash"]
         return instructor
 
+    def list_instructors(self) -> list:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT instructor_id::text, name, username
+                    FROM instructors
+                    ORDER BY name
+                """)
+                return [dict(r) for r in cur.fetchall()]
+        finally:
+            self._put(conn)
+
     def create_manager(self, username: str, email: str, password: str, name: str) -> dict:
         conn = self._conn()
         try:

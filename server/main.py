@@ -274,6 +274,12 @@ async def list_users():
 
 # ─── REST API: 강의자 인증 ─────────────────────────────────────────────────────
 
+@app.get("/api/instructors")
+async def list_instructors():
+    """강의자 목록 반환 (학습자 강의실 선택용)."""
+    return {"instructors": db.list_instructors()}
+
+
 @app.get("/api/auth/check-username")
 async def check_username(username: str, role: str = "instructor"):
     """아이디 중복 확인. available: true면 사용 가능."""
