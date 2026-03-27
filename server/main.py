@@ -19,7 +19,9 @@ import json
 import logging
 import os
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+KST = timezone(timedelta(hours=9))
 from typing import Dict, List, Optional, Set
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -159,7 +161,7 @@ async def client_ws(websocket: WebSocket, session_id: str, user_id: str):
             data["user_id"]    = user_id    # 학습자 UUID (DB 저장용)
             data["name"]       = user_name  # 학습자 이름 (프론트 표시용)
             data["session_id"] = session_id
-            data["timestamp"]  = datetime.now().isoformat()
+            data["timestamp"]  = datetime.now(KST).isoformat()
             data["connected"]  = True
 
             # Colab 필드 기본값 (Colab 꺼져 있을 때도 DB INSERT 가능하도록)

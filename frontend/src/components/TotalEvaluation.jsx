@@ -25,23 +25,27 @@ const STATUS_COLORS = {
 
 // ── 데이터 가공 헬퍼 ────────────────────────────────────────────────────────────
 
-/** records → 1분 버킷 시계열 [{time, 집중도, 피로도}] */
+/** records → 1분 버킷 시계열 [{time, 집중도, 피로도}] (KST 시간순 오름차순)
+ *  서버가 +09:00 timestamp를 반환하므로 new Date()가 KST로 정확히 파싱됨 */
 function processTimeSeries(records) {
   if (!records.length) return [];
   const buckets = {};
   for (const r of records) {
-    const d = new Date(r.timestamp);
-    const key = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-    if (!buckets[key]) buckets[key] = { focus: [], fatigue: [] };
-    if (r.focus_score != null)   buckets[key].focus.push(r.focus_score * 100);
-    if (r.fatigue_score != null) buckets[key].fatigue.push(r.fatigue_score * 100);
+    // timestamp 문자열에서 직접 시:분 추출 (형식: "YYYY-MM-DDTHH:MM:SS+09:00")
+    const timePart = r.timestamp?.slice(11, 16); // "HH:MM"
+    if (!timePart) continue;
+    if (!buckets[timePart]) buckets[timePart] = { focus: [], fatigue: [] };
+    if (r.focus_score != null)   buckets[timePart].focus.push(r.focus_score * 100);
+    if (r.fatigue_score != null) buckets[timePart].fatigue.push(r.fatigue_score * 100);
   }
   const avg = arr => arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null;
-  return Object.entries(buckets).map(([time, v]) => ({
-    time,
-    집중도: avg(v.focus),
-    피로도: avg(v.fatigue),
-  }));
+  return Object.entries(buckets)
+    .sort(([a], [b]) => a.localeCompare(b))  // "HH:MM" 오름차순 정렬
+    .map(([time, v]) => ({
+      time,
+      집중도: avg(v.focus),
+      피로도: avg(v.fatigue),
+    }));
 }
 
 /** records → 표정 레이더 차트 [{subject, key, A}] (비율 %) — 6각형 유지를 위해 전체 감정 포함 */
@@ -378,7 +382,7 @@ function StudentReport({ sessionId, userId, userName, avgFocus, avgFatigue }) {
         <>
           {/* 시계열 집중도 */}
           <Card>
-            <SectionTitle title="시계열 집중도 추이" sub="현재 강의 시간별 집중도 및 피로도 (실제 데이터)" />
+            <SectionTitle title="시계열 집중도 추이" sub="현재 강의 시간별 집중도 및 피로도" />
             {timeSeries.length < 2 ? (
               <EmptyState message="시계열 데이터가 부족합니다 (최소 2분 이상 필요)" />
             ) : (
@@ -409,7 +413,7 @@ function StudentReport({ sessionId, userId, userName, avgFocus, avgFatigue }) {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
             {/* 표정 분석 */}
             <Card>
-              <SectionTitle title="표정 분석 결과" sub="강의 중 감지된 표정 분포 (실제 데이터)" />
+              <SectionTitle title="표정 분석 결과" sub="강의 중 감지된 표정 분포" />
               {emotionData.every(d => d.A === 0) ? (
                 <EmptyState message="표정 데이터 없음" />
               ) : (
@@ -426,7 +430,7 @@ function StudentReport({ sessionId, userId, userName, avgFocus, avgFatigue }) {
 
             {/* 집중 상태 분포 */}
             <Card>
-              <SectionTitle title="집중 상태 분포" sub="강의 중 감지된 집중 상태 비율 (실제 데이터)" />
+              <SectionTitle title="집중 상태 분포" sub="강의 중 감지된 집중 상태 비율" />
               {statusData.length === 0 ? (
                 <EmptyState message="상태 데이터 없음" />
               ) : (

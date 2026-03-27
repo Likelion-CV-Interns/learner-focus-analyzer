@@ -209,7 +209,9 @@ class Database:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
                     """
-                    SELECT user_id, timestamp, status,
+                    SELECT user_id,
+                           to_char(timestamp AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD"T"HH24:MI:SS+09:00') AS timestamp,
+                           status,
                            focus_score, fatigue_score, avg_ear, gaze_yaw, gaze_pitch,
                            head_pitch, head_yaw,
                            emotion, phone_detected, phone_confidence
@@ -580,7 +582,8 @@ class Database:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
                     """
-                    SELECT timestamp, status, focus_score, fatigue_score,
+                    SELECT to_char(timestamp AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD"T"HH24:MI:SS+09:00') AS timestamp,
+                           status, focus_score, fatigue_score,
                            avg_ear, gaze_yaw, gaze_pitch,
                            emotion, phone_detected
                     FROM focus_records
