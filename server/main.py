@@ -46,6 +46,9 @@ db = Database()
 # session_id → set[WebSocket]  (대시보드 연결)
 dashboard_ws: Dict[str, Set[WebSocket]] = defaultdict(set)
 
+# session_id → user_id → WebSocket  (학습자 연결)
+client_ws: Dict[str, Dict[str, WebSocket]] = defaultdict(dict)
+
 # session_id → user_id → 최신 데이터 (스냅샷용)
 latest: Dict[str, Dict[str, dict]] = defaultdict(dict)
 
@@ -109,6 +112,19 @@ async def broadcast(session_id: str, message: dict):
     dashboard_ws[session_id] -= dead
 
 
+async def broadcast_to_learners(session_id: str, message: dict):
+    """해당 세션의 모든 학습자 클라이언트에게 메시지 전송"""
+    payload = json.dumps(message, ensure_ascii=False)
+    dead: list = []
+    for uid, ws in list(client_ws[session_id].items()):
+        try:
+            await ws.send_text(payload)
+        except Exception:
+            dead.append(uid)
+    for uid in dead:
+        client_ws[session_id].pop(uid, None)
+
+
 # ─── WebSocket: detection 클라이언트 ──────────────────────────────────────────
 
 @app.websocket("/ws/client/{session_id}/{user_id}")
@@ -132,6 +148,7 @@ async def client_ws(websocket: WebSocket, session_id: str, user_id: str):
 
     await websocket.accept()
     logger.info(f"[CLIENT 연결] session={session_id}  user={user_id}  name={user_name}")
+    client_ws[session_id][user_id] = websocket
 
     try:
         while True:
@@ -163,6 +180,7 @@ async def client_ws(websocket: WebSocket, session_id: str, user_id: str):
 
     except WebSocketDisconnect:
         logger.info(f"[CLIENT 해제] session={session_id}  user={user_id}")
+        client_ws[session_id].pop(user_id, None)
         if user_id in latest[session_id]:
             latest[session_id][user_id]["connected"] = False
         await broadcast(session_id, {
@@ -246,10 +264,11 @@ async def get_session(session_id: str):
 
 @app.post("/api/sessions/{session_id}/end")
 async def end_session(session_id: str):
-    """세션을 종료합니다. ended_at을 현재 시각으로 설정합니다."""
+    """세션을 종료합니다. ended_at 설정 후 학습자 전체에게 session_ended 메시지 전송."""
     result = db.end_session(session_id)
     if not result:
         raise HTTPException(status_code=404, detail="존재하지 않는 세션입니다.")
+    await broadcast_to_learners(session_id, {"type": "session_ended", "session_id": session_id})
     return result
 
 

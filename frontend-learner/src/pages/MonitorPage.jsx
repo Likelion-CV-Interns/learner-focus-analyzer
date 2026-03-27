@@ -28,6 +28,8 @@ export default function MonitorPage({ user, session, onLeave }) {
   const colabRef    = useRef(null);
   const latestRef   = useRef({});
   const procTimerRef = useRef(null);
+  const onLeaveRef  = useRef(onLeave);
+  useEffect(() => { onLeaveRef.current = onLeave; }, [onLeave]);
   const wsTimerRef   = useRef(null);
   const streamRef   = useRef(null);
 
@@ -144,6 +146,15 @@ export default function MonitorPage({ user, session, onLeave }) {
       wsRef.current = ws;
 
       ws.onopen    = () => setWsStatus('connected');
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'session_ended') {
+            ws.close();
+            onLeaveRef.current?.();
+          }
+        } catch {}
+      };
       ws.onclose   = (e) => {
         setWsStatus(e.code === 4403 || e.code === 4404 ? 'error' : 'disconnected');
         if (e.code !== 4403 && e.code !== 4404) setTimeout(connect, 3000);
