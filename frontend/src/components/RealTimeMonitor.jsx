@@ -301,16 +301,14 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget, o
               });
             }
 
-            return next;
-          });
-
-          setTimeSeries(prev => {
+            // ── 시계열 업데이트 (next 사용으로 stale closure 방지) ──
             const now = new Date();
             const timeStr = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`;
-            const allStates = Object.values({ ...wsStudents, [msg.user_id]: newState });
-            const avgFocus   = allStates.length ? Math.round(allStates.reduce((s, v) => s + v.focusScore, 0) / allStates.length) : 0;
-            const avgFatigue = allStates.length ? Math.round(allStates.reduce((s, v) => s + v.fatigueScore, 0) / allStates.length) : 0;
-            return [...prev.slice(-19), { time: timeStr, focus: avgFocus, fatigue: avgFatigue }];
+            const avgFocus   = Math.round(allStates.reduce((s, v) => s + v.focusScore, 0) / total);
+            const avgFatigue = Math.round(allStates.reduce((s, v) => s + v.fatigueScore, 0) / total);
+            setTimeSeries(ts => [...ts.slice(-29), { time: timeStr, focus: avgFocus, fatigue: avgFatigue }]);
+
+            return next;
           });
         } else if (msg.type === 'user_disconnect') {
           setWsStudents(prev => {
@@ -451,7 +449,7 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget, o
         <ResponsiveContainer width="100%" height={200}>
           <LineChart data={timeSeries} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#F0F0F0" />
-            <XAxis dataKey="time" tick={{ fontSize: 10, fill: '#AAA' }} interval="preserveStartEnd" />
+            <XAxis dataKey="time" tick={{ fontSize: 10, fill: '#AAA' }} interval="preserveStartEnd" reversed={false} />
             <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#AAA' }} />
             <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #EEE', fontSize: 12 }} />
             <Legend wrapperStyle={{ fontSize: 12 }} />

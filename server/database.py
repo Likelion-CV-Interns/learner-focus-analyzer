@@ -45,6 +45,7 @@ class Database:
             dbname=os.getenv("DB_NAME", "focus_db"),
             user=os.getenv("DB_USER", "postgres"),
             password=os.getenv("DB_PASSWORD", ""),
+            options="-c timezone=Asia/Seoul",
         )
         self._lock = threading.Lock()
         self._init_db()
