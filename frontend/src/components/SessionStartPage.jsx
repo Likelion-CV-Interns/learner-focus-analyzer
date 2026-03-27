@@ -218,7 +218,7 @@ function QuizManager({ sessionId }) {
 }
 
 // ── 메인 컴포넌트 ──────────────────────────────────────────────────────────────
-export default function SessionStartPage({ user, onSessionStart }) {
+export default function SessionStartPage({ user, onSessionStart, instructorId }) {
   const [title,    setTitle]    = useState('');
   const [loading,  setLoading]  = useState(false);
   const [sessions, setSessions] = useState([]);
@@ -226,11 +226,14 @@ export default function SessionStartPage({ user, onSessionStart }) {
   const [quizSessionId, setQuizSessionId] = useState(null);
 
   useEffect(() => {
-    fetch(`${API}/api/sessions`)
+    const url = instructorId
+      ? `${API}/api/sessions?instructor_id=${instructorId}`
+      : `${API}/api/sessions`;
+    fetch(url)
       .then(r => r.json())
       .then(d => setSessions(d.sessions ?? []))
       .catch(() => {});
-  }, []);
+  }, [instructorId]);
 
   const handleStart = async (e) => {
     e.preventDefault();
@@ -241,7 +244,7 @@ export default function SessionStartPage({ user, onSessionStart }) {
       const res = await fetch(`${API}/api/sessions`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ name: title.trim() }),
+        body:    JSON.stringify({ name: title.trim(), instructor_id: instructorId ?? null }),
       });
       if (!res.ok) throw new Error('세션 생성 실패');
       const data = await res.json();

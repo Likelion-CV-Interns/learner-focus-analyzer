@@ -68,6 +68,7 @@ def _reload_users_cache():
 
 class SessionCreateBody(BaseModel):
     name: str
+    instructor_id: Optional[str] = None
 
 class UserRegisterBody(BaseModel):
     name: str
@@ -82,6 +83,16 @@ class QuizCreateBody(BaseModel):
 class QuizSubmitBody(BaseModel):
     user_id: str
     answer: str
+
+class RegisterBody(BaseModel):
+    username: str
+    email: str
+    password: str
+    name: str
+
+class LoginBody(BaseModel):
+    username: str
+    password: str
 
 
 # ─── 유틸 ─────────────────────────────────────────────────────────────────────
@@ -216,14 +227,13 @@ async def get_user_records(session_id: str, user_id: str, limit: int = 500):
 
 @app.post("/api/sessions", status_code=201)
 async def create_session(body: SessionCreateBody):
-    """강의 세션을 생성하고 session_id(UUID)를 반환합니다."""
-    row = db.create_session(body.name)
+    row = db.create_session(body.name, body.instructor_id)
     return row
 
 
 @app.get("/api/sessions")
-async def list_sessions():
-    return {"sessions": db.list_sessions()}
+async def list_sessions(instructor_id: Optional[str] = None):
+    return {"sessions": db.list_sessions(instructor_id)}
 
 
 @app.get("/api/sessions/{session_id}")
@@ -260,6 +270,50 @@ async def get_user(user_id: str):
 @app.get("/api/users")
 async def list_users():
     return {"users": db.list_users()}
+
+
+# ─── REST API: 강의자 인증 ─────────────────────────────────────────────────────
+
+@app.get("/api/auth/check-username")
+async def check_username(username: str, role: str = "instructor"):
+    """아이디 중복 확인. available: true면 사용 가능."""
+    if role == "manager":
+        exists = db.get_manager_by_username(username) is not None
+    else:
+        exists = db.get_instructor_by_username(username) is not None
+    return {"available": not exists}
+
+
+@app.post("/api/auth/register", status_code=201)
+async def register(body: RegisterBody, role: str = "instructor"):
+    if role == "manager":
+        if db.get_manager_by_username(body.username):
+            raise HTTPException(status_code=409, detail="이미 사용 중인 아이디입니다.")
+        if db.get_manager_by_email(body.email):
+            raise HTTPException(status_code=409, detail="이미 사용 중인 이메일입니다.")
+        row = db.create_manager(body.username, body.email, body.password, body.name)
+        return {"id": row["manager_id"], "username": row["username"], "email": row["email"], "name": row["name"], "role": "manager"}
+    else:
+        if db.get_instructor_by_username(body.username):
+            raise HTTPException(status_code=409, detail="이미 사용 중인 아이디입니다.")
+        if db.get_instructor_by_email(body.email):
+            raise HTTPException(status_code=409, detail="이미 사용 중인 이메일입니다.")
+        row = db.create_instructor(body.username, body.email, body.password, body.name)
+        return {"id": row["instructor_id"], "username": row["username"], "email": row["email"], "name": row["name"], "role": "instructor"}
+
+
+@app.post("/api/auth/login")
+async def login(body: LoginBody, role: str = "instructor"):
+    if role == "manager":
+        row = db.verify_manager(body.username, body.password)
+        if not row:
+            raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 올바르지 않습니다.")
+        return {"id": row["manager_id"], "username": row["username"], "name": row["name"], "role": "manager"}
+    else:
+        row = db.verify_instructor(body.username, body.password)
+        if not row:
+            raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 올바르지 않습니다.")
+        return {"id": row["instructor_id"], "instructor_id": row["instructor_id"], "username": row["username"], "name": row["name"], "role": "instructor"}
 
 
 # ─── REST API: 퀴즈 관리 ──────────────────────────────────────────────────────
@@ -401,7 +455,7 @@ async def get_ai_feedback(session_id: str):
 """
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    model = genai.GenerativeModel("gemini-2.5-flash")
     response = model.generate_content(prompt)
     feedback_text = response.text
 

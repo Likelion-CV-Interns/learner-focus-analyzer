@@ -16,6 +16,7 @@ psycopg2 ThreadedConnectionPool을 사용한다.
   -- 테이블은 Database() 인스턴스 생성 시 자동으로 만들어짐
 """
 
+import hashlib
 import os
 import threading
 
@@ -25,6 +26,13 @@ from psycopg2.extras import RealDictCursor
 
 from dotenv import load_dotenv
 load_dotenv()
+
+
+def _hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def _verify_password(password: str, hashed: str) -> bool:
+    return _hash_password(password) == hashed
 
 
 class Database:
@@ -93,6 +101,33 @@ class Database:
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                         UNIQUE (name, birth_date)
                     )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS instructors (
+                        instructor_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        username      VARCHAR(50)  NOT NULL UNIQUE,
+                        email         VARCHAR(200) NOT NULL UNIQUE,
+                        password_hash VARCHAR(256) NOT NULL,
+                        name          VARCHAR(100) NOT NULL,
+                        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS managers (
+                        manager_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        username      VARCHAR(50)  NOT NULL UNIQUE,
+                        email         VARCHAR(200) NOT NULL UNIQUE,
+                        password_hash VARCHAR(256) NOT NULL,
+                        name          VARCHAR(100) NOT NULL,
+                        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+                # sessions 테이블에 instructor_id 컬럼 추가 (마이그레이션)
+                cur.execute("""
+                    DO $$ BEGIN
+                        ALTER TABLE sessions ADD COLUMN instructor_id UUID REFERENCES instructors(instructor_id) ON DELETE SET NULL;
+                    EXCEPTION WHEN duplicate_column THEN NULL;
+                    END $$;
                 """)
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS quizzes (
@@ -184,15 +219,121 @@ class Database:
 
     # ── sessions CRUD ───────────────────────────────────────────────────────────
 
-    def create_session(self, name: str) -> dict:
+    # ── 강의자 인증 ──────────────────────────────────────────────────────────────
+
+    def create_instructor(self, username: str, email: str, password: str, name: str) -> dict:
         conn = self._conn()
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
-                    INSERT INTO sessions (name)
-                    VALUES (%s)
-                    RETURNING session_id::text, name, created_at::text
-                """, (name,))
+                    INSERT INTO instructors (username, email, password_hash, name)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING instructor_id::text, username, email, name, created_at::text
+                """, (username, email, _hash_password(password), name))
+                row = cur.fetchone()
+            conn.commit()
+            return dict(row)
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            self._put(conn)
+
+    def get_instructor_by_username(self, username: str) -> dict | None:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT instructor_id::text, username, email, password_hash, name
+                    FROM instructors WHERE username = %s
+                """, (username,))
+                row = cur.fetchone()
+                return dict(row) if row else None
+        finally:
+            self._put(conn)
+
+    def get_instructor_by_email(self, email: str) -> dict | None:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT instructor_id::text, username, email, password_hash, name
+                    FROM instructors WHERE email = %s
+                """, (email,))
+                row = cur.fetchone()
+                return dict(row) if row else None
+        finally:
+            self._put(conn)
+
+    def verify_instructor(self, username: str, password: str) -> dict | None:
+        instructor = self.get_instructor_by_username(username)
+        if not instructor or not _verify_password(password, instructor["password_hash"]):
+            return None
+        del instructor["password_hash"]
+        return instructor
+
+    def create_manager(self, username: str, email: str, password: str, name: str) -> dict:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    INSERT INTO managers (username, email, password_hash, name)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING manager_id::text, username, email, name, created_at::text
+                """, (username, email, _hash_password(password), name))
+                row = cur.fetchone()
+            conn.commit()
+            return dict(row)
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            self._put(conn)
+
+    def get_manager_by_username(self, username: str) -> dict | None:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT manager_id::text, username, email, password_hash, name
+                    FROM managers WHERE username = %s
+                """, (username,))
+                row = cur.fetchone()
+                return dict(row) if row else None
+        finally:
+            self._put(conn)
+
+    def get_manager_by_email(self, email: str) -> dict | None:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT manager_id::text, username, email, password_hash, name
+                    FROM managers WHERE email = %s
+                """, (email,))
+                row = cur.fetchone()
+                return dict(row) if row else None
+        finally:
+            self._put(conn)
+
+    def verify_manager(self, username: str, password: str) -> dict | None:
+        manager = self.get_manager_by_username(username)
+        if not manager or not _verify_password(password, manager["password_hash"]):
+            return None
+        del manager["password_hash"]
+        return manager
+
+    # ── sessions CRUD ───────────────────────────────────────────────────────────
+
+    def create_session(self, name: str, instructor_id: str | None = None) -> dict:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    INSERT INTO sessions (name, instructor_id)
+                    VALUES (%s, %s)
+                    RETURNING session_id::text, name, created_at::text, instructor_id::text
+                """, (name, instructor_id))
                 row = cur.fetchone()
             conn.commit()
             return dict(row)
@@ -212,14 +353,20 @@ class Database:
         finally:
             self._put(conn)
 
-    def list_sessions(self) -> list:
+    def list_sessions(self, instructor_id: str | None = None) -> list:
         conn = self._conn()
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT session_id::text, name, created_at::text
-                    FROM sessions ORDER BY created_at DESC
-                """)
+                if instructor_id:
+                    cur.execute("""
+                        SELECT session_id::text, name, created_at::text, instructor_id::text
+                        FROM sessions WHERE instructor_id = %s ORDER BY created_at DESC
+                    """, (instructor_id,))
+                else:
+                    cur.execute("""
+                        SELECT session_id::text, name, created_at::text, instructor_id::text
+                        FROM sessions ORDER BY created_at DESC
+                    """)
                 return [dict(row) for row in cur.fetchall()]
         finally:
             self._put(conn)

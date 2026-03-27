@@ -109,7 +109,7 @@ export default function App() {
                 monitoringTarget={{ sessionId: activeSession.session_id, name: user.name, course: activeSession.name }}
                 onEndSession={() => setActiveSession(null)}
               />
-            : <SessionStartPage user={user} onSessionStart={setActiveSession} />
+            : <SessionStartPage user={user} onSessionStart={setActiveSession} instructorId={user.instructor_id ?? null} />
         )}
 
         {/* ── 매니저 전용 ── */}

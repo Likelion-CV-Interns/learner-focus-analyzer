@@ -177,6 +177,24 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget, o
 
   const sessionId = monitoringTarget?.sessionId;
 
+  // 알림 쿨다운 (카테고리별 마지막 알림 시각)
+  const cooldownRef = useRef({});
+  const COOLDOWN = {
+    drowsy:    60_000,   // 1분
+    phone:     30_000,   // 30초
+    focus_low: 120_000,  // 2분
+    boredom:   120_000,  // 2분
+    fatigue:   120_000,  // 2분
+  };
+
+  const tryNotify = useCallback((key, notif) => {
+    const now = Date.now();
+    const last = cooldownRef.current[key] ?? 0;
+    if (now - last < (COOLDOWN[key] ?? 60_000)) return;
+    cooldownRef.current[key] = now;
+    onNewNotification(notif);
+  }, [onNewNotification]);
+
   // 핸드폰 상태 자동 복귀 타이머 (1초마다 체크)
   useEffect(() => {
     const timer = setInterval(() => {
@@ -206,12 +224,16 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget, o
 
     let ws;
     let pingTimer;
+    let retryTimer;
+    let isActive = true;  // 언마운트 후 stale 콜백 방지
 
     function connect() {
+      if (!isActive) return;
       ws = new WebSocket(`${WS_SERVER}/ws/dashboard/${sessionId}`);
       wsRef.current = ws;
 
       ws.onopen = () => {
+        if (!isActive) return;
         setWsConnected(true);
         pingTimer = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) ws.send('ping');
@@ -219,23 +241,78 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget, o
       };
 
       ws.onmessage = (e) => {
+        if (!isActive) return;
         if (e.data === 'pong') return;
         const msg = JSON.parse(e.data);
         if (msg.type === 'snapshot') {
-          // 초기 스냅샷: 연결된 모든 유저 상태 한 번에 수신
           const next = {};
           Object.entries(msg.users || {}).forEach(([uid, data]) => {
             next[uid] = toStudentState(data);
           });
           setWsStudents(next);
         } else if (msg.type === 'user_update') {
-          setWsStudents(prev => ({ ...prev, [msg.user_id]: toStudentState(msg, prev[msg.user_id]) }));
-          // 집중도 추이 차트에도 포인트 추가
+          const studentName = msg.name ?? msg.user_id?.slice(0, 6) ?? '학습자';
+          const newState = toStudentState(msg);
+
+          // ── 개별 알림 ──
+          if (newState.status === 'drowsy') {
+            tryNotify(`drowsy_${msg.user_id}`, {
+              type: 'individual',
+              title: `${studentName} 졸음 감지`,
+              message: `${studentName} 학습자가 졸음 상태입니다. 즉시 확인이 필요합니다.`,
+            });
+          }
+          if (msg.phone_detected) {
+            tryNotify(`phone_${msg.user_id}`, {
+              type: 'individual',
+              title: `${studentName} 핸드폰 감지`,
+              message: `${studentName} 학습자가 핸드폰을 사용 중입니다.`,
+            });
+          }
+
+          setWsStudents(prev => {
+            const next = { ...prev, [msg.user_id]: newState };
+            const allStates = Object.values(next);
+            const total = allStates.length || 1;
+
+            // ── 전체 알림: 집중도 40% 미만 ──
+            const avgFocusVal = allStates.reduce((s, v) => s + v.focusScore, 0) / total;
+            if (avgFocusVal < 40) {
+              tryNotify('focus_low', {
+                type: 'class',
+                title: '전체 집중도 저하',
+                message: `전체 평균 집중도가 ${Math.round(avgFocusVal)}%로 떨어졌습니다. 휴식이나 활동 전환을 권장합니다.`,
+              });
+            }
+
+            // ── 전체 알림: 지루함 50% 이상 ──
+            const boredCount = allStates.filter(v => v.expression === 'boredom').length;
+            if (boredCount / total >= 0.5) {
+              tryNotify('boredom', {
+                type: 'boredom',
+                title: '지루함 감지 — 쉬는 시간 권장',
+                message: `${Math.round(boredCount / total * 100)}%의 학습자가 지루함 표정을 보입니다. 퀴즈나 휴식을 권장합니다.`,
+              });
+            }
+
+            // ── 전체 알림: 피로도 50% 이상 ──
+            const fatiguedCount = allStates.filter(v => v.fatigueScore > 60).length;
+            if (fatiguedCount / total >= 0.5) {
+              tryNotify('fatigue', {
+                type: 'class',
+                title: '피로도 높음 — 쉬는 시간 권장',
+                message: `${Math.round(fatiguedCount / total * 100)}%의 학습자 피로도가 높습니다. 잠시 휴식을 권장합니다.`,
+              });
+            }
+
+            return next;
+          });
+
           setTimeSeries(prev => {
             const now = new Date();
             const timeStr = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`;
-            const allStates = Object.values({ ...wsStudents, [msg.user_id]: toStudentState(msg) });
-            const avgFocus  = allStates.length ? Math.round(allStates.reduce((s, v) => s + v.focusScore, 0) / allStates.length) : 0;
+            const allStates = Object.values({ ...wsStudents, [msg.user_id]: newState });
+            const avgFocus   = allStates.length ? Math.round(allStates.reduce((s, v) => s + v.focusScore, 0) / allStates.length) : 0;
             const avgFatigue = allStates.length ? Math.round(allStates.reduce((s, v) => s + v.fatigueScore, 0) / allStates.length) : 0;
             return [...prev.slice(-19), { time: timeStr, focus: avgFocus, fatigue: avgFatigue }];
           });
@@ -249,10 +326,10 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget, o
       };
 
       ws.onclose = () => {
+        if (!isActive) return;  // 언마운트됐으면 재연결 안 함
         setWsConnected(false);
         clearInterval(pingTimer);
-        // 3초 후 재연결
-        setTimeout(connect, 3000);
+        retryTimer = setTimeout(connect, 3000);
       };
 
       ws.onerror = () => ws.close();
@@ -261,6 +338,8 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget, o
     connect();
 
     return () => {
+      isActive = false;          // 이후 콜백 전부 차단
+      clearTimeout(retryTimer);  // 대기 중인 재연결 타이머 취소
       clearInterval(pingTimer);
       ws?.close();
     };
@@ -501,7 +580,7 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget, o
                 {f.label}
                 {f.key !== 'all' && (
                   <span style={{ marginLeft: 4, opacity: 0.8 }}>
-                    ({Object.values(states).filter(s => s.status === f.key).length})
+                    ({Object.values(displayStates).filter(s => s?.status === f.key).length})
                   </span>
                 )}
               </button>
