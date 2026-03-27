@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
 } from 'recharts';
-import { STUDENTS, STATUS_CONFIG, generateStudentState, generateTimeSeries } from '../utils/mockData';
+import { STATUS_CONFIG } from '../utils/mockData';
 
 const WS_SERVER = 'wss://likelionfocus.duckdns.org';
 
@@ -162,13 +162,9 @@ function StatCard({ label, value, sub, color, icon }) {
 }
 
 export default function RealTimeMonitor({ onNewNotification, monitoringTarget, onEndSession }) {
-  const [states, setStates] = useState(() =>
-    Object.fromEntries(STUDENTS.map(s => [s.id, generateStudentState(s.id)]))
-  );
-  const [timeSeries, setTimeSeries] = useState(generateTimeSeries);
+  const [timeSeries, setTimeSeries] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [filterStatus, setFilterStatus] = useState('all');
-  const [isLive, setIsLive] = useState(true);
 
   // ── 실시간 WebSocket 상태 ──
   const [wsStudents, setWsStudents] = useState({});   // user_id → state
@@ -352,10 +348,8 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget, o
     seat: null,
   }));
 
-  const displayStudents = realUsers.length > 0 ? realUsers : STUDENTS;
-  const displayStates   = realUsers.length > 0
-    ? Object.fromEntries(realUsers.map(u => [u.id, wsStudents[u.id]]))
-    : Object.fromEntries(STUDENTS.map(s => [s.id, states[s.id]]));
+  const displayStudents = realUsers;
+  const displayStates   = Object.fromEntries(realUsers.map(u => [u.id, wsStudents[u.id]]));
 
   const allStateValues = Object.values(displayStates);
   const totalCount   = displayStudents.length || 1;
@@ -367,68 +361,6 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget, o
   const phoneCount   = allStateValues.filter(s => s.status === 'phone').length;
   const focusRatio   = Math.round((focusedCount / totalCount) * 100);
 
-  const updateStates = useCallback(() => {
-    setStates(prev => {
-      const next = { ...prev };
-      const alerts = [];
-
-      STUDENTS.forEach(student => {
-        const newState = generateStudentState(student.id);
-        const old = prev[student.id];
-
-        if (old.status === 'focused' && (newState.status === 'drowsy' || newState.status === 'phone')) {
-          alerts.push({
-            type: 'individual',
-            title: `${student.name} 학습자 주의`,
-            message: newState.status === 'drowsy'
-              ? `${student.name}(${student.seat}) 학습자가 졸음 상태로 전환되었습니다.`
-              : `${student.name}(${student.seat}) 학습자가 핸드폰을 사용 중입니다.`,
-          });
-        }
-        next[student.id] = newState;
-      });
-
-      // Class-level threshold check
-      const newFocused = Object.values(next).filter(s => s.status === 'focused').length;
-      const ratio = (newFocused / STUDENTS.length) * 100;
-      if (ratio < 40) {
-        alerts.push({
-          type: 'class',
-          title: '전체 집중도 저하',
-          message: `학습자 집중도 비율이 ${Math.round(ratio)}%로 40% 미만입니다. 쉬는 시간이 필요합니다.`,
-        });
-      }
-
-      // Boredom check
-      const boredCount = Object.values(next).filter(s => s.expression === 'boredom').length;
-      if (boredCount > STUDENTS.length / 2) {
-        alerts.push({
-          type: 'boredom',
-          title: '지루함 감지',
-          message: `과반수 이상의 학습자가 지루함 표정을 보입니다. 퀴즈나 휴식을 권장합니다.`,
-        });
-      }
-
-      alerts.forEach(a => onNewNotification(a));
-      return next;
-    });
-
-    setTimeSeries(prev => {
-      const now = new Date();
-      const newPoint = {
-        time: `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`,
-        focus: Math.round(40 + Math.random() * 45),
-        fatigue: Math.round(20 + Math.random() * 40),
-      };
-      return [...prev.slice(-19), newPoint];
-    });
-  }, [onNewNotification]);
-
-  useEffect(() => {
-    if (!isLive) return;
-    const interval = setInterval(updateStates, 4000);
-    return () => clearInterval(interval);
-  }, [isLive, updateStates]);
 
   const filtered = displayStudents.filter(s =>
     filterStatus === 'all' || displayStates[s.id]?.status === filterStatus
@@ -469,32 +401,11 @@ export default function RealTimeMonitor({ onNewNotification, monitoringTarget, o
           <div style={{
             display: 'flex', alignItems: 'center', gap: 6,
             padding: '6px 14px', borderRadius: 20,
-            background: isLive ? '#F0FDF4' : '#F5F5F5',
-            border: `1.5px solid ${isLive ? '#86EFAC' : '#DDD'}`,
+            background: '#F0FDF4', border: '1.5px solid #86EFAC',
           }}>
-            <span style={{
-              width: 8, height: 8, borderRadius: '50%',
-              background: isLive ? '#22C55E' : '#CCC',
-              animation: isLive ? 'pulse 1.5s infinite' : 'none',
-            }} />
-            <span style={{ fontSize: 12, fontWeight: 700, color: isLive ? '#15803D' : '#888' }}>
-              {isLive ? 'LIVE' : 'PAUSED'}
-            </span>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#22C55E', animation: 'pulse 1.5s infinite' }} />
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#15803D' }}>LIVE</span>
           </div>
-          <button
-            onClick={() => setIsLive(v => !v)}
-            style={{
-              padding: '8px 16px',
-              borderRadius: 8,
-              background: isLive ? '#FFF5F0' : '#FF6B2B',
-              color: isLive ? '#FF6B2B' : '#fff',
-              border: `1.5px solid ${isLive ? '#FF6B2B' : 'transparent'}`,
-              fontWeight: 700,
-              fontSize: 13,
-            }}
-          >
-            {isLive ? '⏸ 일시정지' : '▶ 재개'}
-          </button>
           {onEndSession && (
             <button
               onClick={() => {
