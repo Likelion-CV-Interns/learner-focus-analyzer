@@ -165,33 +165,56 @@ export default function SessionPage({ user, onJoin, onLogout }) {
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {sessions.map(s => (
-                <div
-                  key={s.session_id}
-                  style={{
-                    border: '1.5px solid #FFD5B0', borderRadius: 14,
-                    padding: '16px 18px', background: '#FFF8F5',
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  }}
-                >
-                  <div>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: '#1A1A1A' }}>{s.name}</div>
-                    <div style={{ fontSize: 11, color: '#AAA', marginTop: 3 }}>{formatDate(s.created_at)}</div>
-                  </div>
-                  <button
-                    onClick={() => onJoin({ session_id: s.session_id, name: s.name })}
+              {sessions.map(s => {
+                const isEnded = !!s.ended_at;
+                return (
+                  <div
+                    key={s.session_id}
                     style={{
-                      padding: '9px 18px', borderRadius: 10, border: 'none',
-                      background: 'linear-gradient(135deg, #FF6B2B, #FF8C55)',
-                      color: '#fff', fontSize: 13, fontWeight: 700,
-                      cursor: 'pointer', boxShadow: '0 3px 10px rgba(255,107,43,0.3)',
-                      whiteSpace: 'nowrap',
+                      border: `1.5px solid ${isEnded ? '#E0E0E0' : '#FFD5B0'}`,
+                      borderRadius: 14,
+                      padding: '16px 18px',
+                      background: isEnded ? '#F5F5F5' : '#FFF8F5',
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                      opacity: isEnded ? 0.8 : 1,
                     }}
                   >
-                    입장
-                  </button>
-                </div>
-              ))}
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: isEnded ? '#999' : '#1A1A1A' }}>{s.name}</div>
+                        {isEnded && (
+                          <span style={{
+                            fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 20,
+                            background: '#E8E8E8', color: '#888', border: '1px solid #DDD',
+                          }}>방송 종료</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#AAA', marginTop: 3 }}>{formatDate(s.created_at)}</div>
+                    </div>
+                    {isEnded ? (
+                      <span style={{
+                        padding: '9px 16px', borderRadius: 10, fontSize: 12, fontWeight: 600,
+                        color: '#AAA', background: '#EBEBEB', whiteSpace: 'nowrap',
+                      }}>
+                        종료됨
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => onJoin({ session_id: s.session_id, name: s.name })}
+                        style={{
+                          padding: '9px 18px', borderRadius: 10, border: 'none',
+                          background: 'linear-gradient(135deg, #FF6B2B, #FF8C55)',
+                          color: '#fff', fontSize: 13, fontWeight: 700,
+                          cursor: 'pointer', boxShadow: '0 3px 10px rgba(255,107,43,0.3)',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        입장
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )
         )}
