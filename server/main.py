@@ -244,6 +244,15 @@ async def get_session(session_id: str):
     return session
 
 
+@app.post("/api/sessions/{session_id}/end")
+async def end_session(session_id: str):
+    """세션을 종료합니다. ended_at을 현재 시각으로 설정합니다."""
+    result = db.end_session(session_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="존재하지 않는 세션입니다.")
+    return result
+
+
 # ─── REST API: 학습자 등록 ─────────────────────────────────────────────────────
 
 @app.post("/api/users", status_code=201)

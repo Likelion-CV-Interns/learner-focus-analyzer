@@ -122,10 +122,16 @@ class Database:
                         created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     )
                 """)
-                # sessions 테이블에 instructor_id 컬럼 추가 (마이그레이션)
+                # sessions 테이블 마이그레이션
                 cur.execute("""
                     DO $$ BEGIN
                         ALTER TABLE sessions ADD COLUMN instructor_id UUID REFERENCES instructors(instructor_id) ON DELETE SET NULL;
+                    EXCEPTION WHEN duplicate_column THEN NULL;
+                    END $$;
+                """)
+                cur.execute("""
+                    DO $$ BEGIN
+                        ALTER TABLE sessions ADD COLUMN ended_at TIMESTAMPTZ DEFAULT NULL;
                     EXCEPTION WHEN duplicate_column THEN NULL;
                     END $$;
                 """)
@@ -358,11 +364,29 @@ class Database:
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT session_id::text, name, created_at::text
+                    SELECT session_id::text, name, created_at::text, ended_at::text
                     FROM sessions WHERE session_id = %s
                 """, (session_id,))
                 row = cur.fetchone()
                 return dict(row) if row else None
+        finally:
+            self._put(conn)
+
+    def end_session(self, session_id: str) -> dict | None:
+        conn = self._conn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    UPDATE sessions SET ended_at = NOW()
+                    WHERE session_id = %s
+                    RETURNING session_id::text, name, ended_at::text
+                """, (session_id,))
+                row = cur.fetchone()
+            conn.commit()
+            return dict(row) if row else None
+        except Exception as e:
+            conn.rollback()
+            raise e
         finally:
             self._put(conn)
 
@@ -372,12 +396,12 @@ class Database:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 if instructor_id:
                     cur.execute("""
-                        SELECT session_id::text, name, created_at::text, instructor_id::text
+                        SELECT session_id::text, name, created_at::text, instructor_id::text, ended_at::text
                         FROM sessions WHERE instructor_id = %s ORDER BY created_at DESC
                     """, (instructor_id,))
                 else:
                     cur.execute("""
-                        SELECT session_id::text, name, created_at::text, instructor_id::text
+                        SELECT session_id::text, name, created_at::text, instructor_id::text, ended_at::text
                         FROM sessions ORDER BY created_at DESC
                     """)
                 return [dict(row) for row in cur.fetchall()]

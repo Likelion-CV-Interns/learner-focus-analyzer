@@ -349,50 +349,74 @@ export default function SessionStartPage({ user, onSessionStart, instructorId })
             이전 세션 이어하기
           </h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {sessions.filter(s => s.session_id !== quizSessionId).slice(0, 5).map(s => (
-              <div key={s.session_id}>
-                <div style={{
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  padding: '12px 16px', borderRadius: 12,
-                  background: '#FAFAFA', border: '1px solid #EEE',
-                }}>
-                  <div>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: '#1A1A1A' }}>{s.name}</div>
-                    <div style={{ fontSize: 11, color: '#AAA', marginTop: 2 }}>{formatDate(s.created_at)}</div>
-                  </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <button
-                      onClick={() => setQuizSessionId(quizSessionId === s.session_id ? null : s.session_id)}
-                      style={{
-                        padding: '7px 12px', borderRadius: 8,
-                        border: '1.5px solid #E0E0E0', background: '#F5F5F5',
-                        color: '#555', fontSize: 12, fontWeight: 600, cursor: 'pointer',
-                      }}
-                    >
-                      퀴즈 관리
-                    </button>
-                    <button
-                      onClick={() => onSessionStart({ session_id: s.session_id, name: s.name })}
-                      style={{
-                        padding: '7px 14px', borderRadius: 8,
-                        border: '1.5px solid #FFD5B0', background: '#FFF5F0',
-                        color: '#FF6B2B', fontSize: 12, fontWeight: 700, cursor: 'pointer',
-                      }}
-                    >
-                      모니터링 열기
-                    </button>
-                  </div>
-                </div>
-                {quizSessionId === s.session_id && (
+            {sessions.filter(s => s.session_id !== quizSessionId).slice(0, 5).map(s => {
+              const isEnded = !!s.ended_at;
+              return (
+                <div key={s.session_id}>
                   <div style={{
-                    background: '#FAFAFA', borderRadius: '0 0 12px 12px',
-                    padding: '16px 16px 20px', border: '1px solid #EEE', borderTop: 'none',
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    padding: '12px 16px', borderRadius: 12,
+                    background: isEnded ? '#F9F9F9' : '#FAFAFA',
+                    border: `1px solid ${isEnded ? '#DDD' : '#EEE'}`,
+                    opacity: isEnded ? 0.85 : 1,
                   }}>
-                    <QuizManager sessionId={s.session_id} />
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: isEnded ? '#888' : '#1A1A1A' }}>{s.name}</div>
+                        {isEnded && (
+                          <span style={{
+                            fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 20,
+                            background: '#F0F0F0', color: '#999', border: '1px solid #E0E0E0',
+                          }}>방송 종료</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#AAA', marginTop: 2 }}>{formatDate(s.created_at)}</div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      {!isEnded && (
+                        <button
+                          onClick={() => setQuizSessionId(quizSessionId === s.session_id ? null : s.session_id)}
+                          style={{
+                            padding: '7px 12px', borderRadius: 8,
+                            border: '1.5px solid #E0E0E0', background: '#F5F5F5',
+                            color: '#555', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                          }}
+                        >
+                          퀴즈 관리
+                        </button>
+                      )}
+                      {isEnded ? (
+                        <span style={{
+                          padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+                          color: '#999', border: '1.5px solid #E0E0E0', background: '#F5F5F5',
+                        }}>
+                          리포트에서 확인
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => onSessionStart({ session_id: s.session_id, name: s.name })}
+                          style={{
+                            padding: '7px 14px', borderRadius: 8,
+                            border: '1.5px solid #FFD5B0', background: '#FFF5F0',
+                            color: '#FF6B2B', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                          }}
+                        >
+                          모니터링 열기
+                        </button>
+                      )}
+                    </div>
                   </div>
-                )}
-              </div>
-            ))}
+                  {!isEnded && quizSessionId === s.session_id && (
+                    <div style={{
+                      background: '#FAFAFA', borderRadius: '0 0 12px 12px',
+                      padding: '16px 16px 20px', border: '1px solid #EEE', borderTop: 'none',
+                    }}>
+                      <QuizManager sessionId={s.session_id} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

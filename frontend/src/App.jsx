@@ -107,7 +107,12 @@ export default function App() {
             ? <RealTimeMonitor
                 onNewNotification={addNotification}
                 monitoringTarget={{ sessionId: activeSession.session_id, name: user.name, course: activeSession.name }}
-                onEndSession={() => setActiveSession(null)}
+                onEndSession={async () => {
+                  try {
+                    await fetch(`https://likelionfocus.duckdns.org/api/sessions/${activeSession.session_id}/end`, { method: 'POST' });
+                  } catch {}
+                  setActiveSession(null);
+                }}
               />
             : <SessionStartPage user={user} onSessionStart={setActiveSession} instructorId={user.instructor_id ?? null} />
         )}
