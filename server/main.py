@@ -47,7 +47,7 @@ db = Database()
 dashboard_ws: Dict[str, Set[WebSocket]] = defaultdict(set)
 
 # session_id → user_id → WebSocket  (학습자 연결)
-client_ws: Dict[str, Dict[str, WebSocket]] = defaultdict(dict)
+learner_ws: Dict[str, Dict[str, WebSocket]] = defaultdict(dict)
 
 # session_id → user_id → 최신 데이터 (스냅샷용)
 latest: Dict[str, Dict[str, dict]] = defaultdict(dict)
@@ -116,13 +116,13 @@ async def broadcast_to_learners(session_id: str, message: dict):
     """해당 세션의 모든 학습자 클라이언트에게 메시지 전송"""
     payload = json.dumps(message, ensure_ascii=False)
     dead: list = []
-    for uid, ws in list(client_ws[session_id].items()):
+    for uid, ws in list(learner_ws[session_id].items()):
         try:
             await ws.send_text(payload)
         except Exception:
             dead.append(uid)
     for uid in dead:
-        client_ws[session_id].pop(uid, None)
+        learner_ws[session_id].pop(uid, None)
 
 
 # ─── WebSocket: detection 클라이언트 ──────────────────────────────────────────
@@ -148,7 +148,7 @@ async def client_ws(websocket: WebSocket, session_id: str, user_id: str):
 
     await websocket.accept()
     logger.info(f"[CLIENT 연결] session={session_id}  user={user_id}  name={user_name}")
-    client_ws[session_id][user_id] = websocket
+    learner_ws[session_id][user_id] = websocket
 
     try:
         while True:
@@ -180,7 +180,7 @@ async def client_ws(websocket: WebSocket, session_id: str, user_id: str):
 
     except WebSocketDisconnect:
         logger.info(f"[CLIENT 해제] session={session_id}  user={user_id}")
-        client_ws[session_id].pop(user_id, None)
+        learner_ws[session_id].pop(user_id, None)
         if user_id in latest[session_id]:
             latest[session_id][user_id]["connected"] = False
         await broadcast(session_id, {
