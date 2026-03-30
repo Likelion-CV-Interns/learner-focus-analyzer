@@ -10,6 +10,8 @@ gaze_estimator.py의 detection 결과(gaze / head / posture)를 받아
     status       : "focused" | "distracted" | "drowsy" | "uncertain"
 """
 
+import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional
 
@@ -61,6 +63,26 @@ EAR_EMA_ALPHA   = 0.005
 #   α=0.05 기준, 시정수 ≈ 20프레임(0.67초) → 순간 노이즈 제거 + 빠른 반응
 FOCUS_EMA_ALPHA = 0.05
 
+# ── 피로도 추가 신호 ──────────────────────────────────────────────────────────
+
+# 세션 경과 시간: 90분에서 최대 기여치(0.6)에 도달
+TIME_FATIGUE_MAX_MIN   = 90.0   # 분
+TIME_FATIGUE_MAX_VALUE = 0.60   # 90분 도달 시 time_fatigue 최댓값
+
+# 시선 고착: 최근 N 프레임의 시선 표준편차가 이 값 이하면 고착으로 판정
+GAZE_HISTORY_FRAMES     = 900   # 30fps × 30초
+GAZE_STD_NORMAL         = 0.15  # 정상 시선 이동 표준편차 기준
+
+# 미세 머리 움직임: 최근 N 프레임의 head yaw/pitch 표준편차
+HEAD_HISTORY_FRAMES     = 900   # 30fps × 30초
+HEAD_STD_NORMAL         = 5.0   # 정상 미세 머리 움직임 표준편차 (도)
+
+# 피로도 가중치 합산 (합 = 1.0)
+W_EAR        = 0.25
+W_TIME       = 0.35
+W_FIXATION   = 0.25
+W_HEAD_MOTION = 0.15
+
 
 # ─── 결과 데이터클래스 ────────────────────────────────────────────────────────
 
@@ -110,6 +132,13 @@ class FocusScorer:
         self._ear_ema: Optional[float] = None   # 첫 프레임 전까지 None
         self._focus_ema: float = 0.5            # 중립값으로 시작
 
+        # 추가 피로도 신호
+        self._session_start: float = time.time()
+        self._gaze_yaw_hist:   deque = deque(maxlen=GAZE_HISTORY_FRAMES)
+        self._gaze_pitch_hist: deque = deque(maxlen=GAZE_HISTORY_FRAMES)
+        self._head_yaw_hist:   deque = deque(maxlen=HEAD_HISTORY_FRAMES)
+        self._head_pitch_hist: deque = deque(maxlen=HEAD_HISTORY_FRAMES)
+
     # ── 점수 계산 ──────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -157,30 +186,76 @@ class FocusScorer:
         )
         return raw_focus, gaze_score, head_score, shoulder_score
 
-    def _calc_fatigue(self, gaze_info: Optional[dict]) -> tuple[float, float]:
+    @staticmethod
+    def _std(values: deque) -> float:
+        """deque의 표준편차 (numpy 없이)"""
+        n = len(values)
+        if n < 2:
+            return 0.0
+        mean = sum(values) / n
+        return (sum((x - mean) ** 2 for x in values) / n) ** 0.5
+
+    def _calc_fatigue(self, gaze_info: Optional[dict],
+                      head_info: Optional[dict]) -> tuple[float, float]:
         """
         Returns (fatigue_score, avg_ear)
 
-        EAR EMA 기반 피로도:
-          - 단발 깜빡임(1~2프레임)은 EMA에 거의 영향 없음 (~1%)
-          - 지속적인 눈 감김(수십 초)이 쌓여야 피로도 상승
-          - EMA_EAR >= EAR_NORMAL → 0.0 / <= EAR_DROWSY → 1.0
+        4가지 신호를 가중 합산:
+          1. ear_fatigue     : EAR EMA (눈 감김 누적)
+          2. time_fatigue    : 세션 경과 시간 (90분 → 최대 0.6)
+          3. fixation_fatigue: 시선 고착 (시선 표준편차 저하)
+          4. head_motion_fat : 미세 머리 움직임 감소
         """
+        # ── 1. EAR 피로도 (기존 로직) ──
         if gaze_info is None:
-            fatigue = _clamp(1.0 - ((self._ear_ema or EAR_NORMAL) - EAR_DROWSY)
-                             / (EAR_NORMAL - EAR_DROWSY), 0.0, 1.0)
-            return fatigue, 0.0
-
-        avg_ear = (gaze_info["left_ear"] + gaze_info["right_ear"]) / 2.0
-
-        # EMA 업데이트 (첫 프레임은 현재 값으로 초기화)
-        if self._ear_ema is None:
-            self._ear_ema = avg_ear
+            ear_fatigue = _clamp(1.0 - ((self._ear_ema or EAR_NORMAL) - EAR_DROWSY)
+                                 / (EAR_NORMAL - EAR_DROWSY), 0.0, 1.0)
+            avg_ear = 0.0
         else:
-            self._ear_ema = (1 - EAR_EMA_ALPHA) * self._ear_ema + EAR_EMA_ALPHA * avg_ear
+            avg_ear = (gaze_info["left_ear"] + gaze_info["right_ear"]) / 2.0
+            if self._ear_ema is None:
+                self._ear_ema = avg_ear
+            else:
+                self._ear_ema = (1 - EAR_EMA_ALPHA) * self._ear_ema + EAR_EMA_ALPHA * avg_ear
+            span = EAR_NORMAL - EAR_DROWSY
+            ear_fatigue = _clamp(1.0 - (self._ear_ema - EAR_DROWSY) / span, 0.0, 1.0)
 
-        span    = EAR_NORMAL - EAR_DROWSY
-        fatigue = _clamp(1.0 - (self._ear_ema - EAR_DROWSY) / span, 0.0, 1.0)
+        # ── 2. 세션 경과 시간 피로도 ──
+        elapsed_min = (time.time() - self._session_start) / 60.0
+        time_fatigue = _clamp(
+            (elapsed_min / TIME_FATIGUE_MAX_MIN) * TIME_FATIGUE_MAX_VALUE,
+            0.0, TIME_FATIGUE_MAX_VALUE,
+        )
+
+        # ── 3. 시선 고착 피로도 ──
+        if gaze_info is not None:
+            self._gaze_yaw_hist.append(gaze_info["yaw_ratio"])
+            self._gaze_pitch_hist.append(gaze_info["pitch_ratio"])
+
+        if len(self._gaze_yaw_hist) >= 30:
+            gaze_std = (self._std(self._gaze_yaw_hist) + self._std(self._gaze_pitch_hist)) / 2.0
+            fixation_fatigue = _clamp(1.0 - gaze_std / GAZE_STD_NORMAL, 0.0, 1.0)
+        else:
+            fixation_fatigue = 0.0   # 데이터 부족 시 미적용
+
+        # ── 4. 미세 머리 움직임 감소 피로도 ──
+        if head_info is not None:
+            self._head_yaw_hist.append(head_info["yaw"])
+            self._head_pitch_hist.append(head_info["pitch"])
+
+        if len(self._head_yaw_hist) >= 30:
+            head_std = (self._std(self._head_yaw_hist) + self._std(self._head_pitch_hist)) / 2.0
+            head_motion_fatigue = _clamp(1.0 - head_std / HEAD_STD_NORMAL, 0.0, 1.0)
+        else:
+            head_motion_fatigue = 0.0   # 데이터 부족 시 미적용
+
+        fatigue = _clamp(
+            W_EAR         * ear_fatigue
+            + W_TIME      * time_fatigue
+            + W_FIXATION  * fixation_fatigue
+            + W_HEAD_MOTION * head_motion_fatigue,
+            0.0, 1.0,
+        )
         return fatigue, avg_ear
 
     # ── 상태 분류 ─────────────────────────────────────────────────────────────
@@ -254,7 +329,7 @@ class FocusScorer:
         """
         raw_focus, gaze_score, head_score, shoulder_score = \
             self._calc_focus(gaze_info, head_info, posture_info)
-        fatigue_score, avg_ear = self._calc_fatigue(gaze_info)
+        fatigue_score, avg_ear = self._calc_fatigue(gaze_info, head_info)
 
         # 집중도 EMA smoothing (순간 노이즈 제거)
         self._focus_ema = ((1 - FOCUS_EMA_ALPHA) * self._focus_ema
@@ -282,3 +357,8 @@ class FocusScorer:
         self._confirm_count = 0
         self._ear_ema       = None
         self._focus_ema     = 0.5
+        self._session_start = time.time()
+        self._gaze_yaw_hist.clear()
+        self._gaze_pitch_hist.clear()
+        self._head_yaw_hist.clear()
+        self._head_pitch_hist.clear()
