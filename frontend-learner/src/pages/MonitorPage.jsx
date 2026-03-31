@@ -18,7 +18,12 @@ const STATUS_CFG = {
 
 const EMOTION_KR = {
   engagement: '집중', boredom: '지루함', confusion: '혼란',
-  amused: '웃음', surprise: '놀람', neutral: '중립',
+  amused: '웃음', surprise: '놀람',
+};
+
+const EMOTION_EMOJI = {
+  engagement: '😊', boredom: '😑', confusion: '😕',
+  amused: '😄', surprise: '😲',
 };
 
 export default function MonitorPage({ user, session, onLeave }) {
@@ -355,7 +360,9 @@ export default function MonitorPage({ user, session, onLeave }) {
           <div style={{ background: '#1A1A1A', borderRadius: 12, padding: '14px', border: '1px solid #2A2A2A' }}>
             <div style={{ fontSize: 11, color: '#555', marginBottom: 6 }}>표정</div>
             <div style={{ fontSize: 16, fontWeight: 700, color: '#CCC' }}>
-              {display.emotion ? (EMOTION_KR[display.emotion] ?? display.emotion) : '-'}
+              {display.emotion
+                ? `${EMOTION_EMOJI[display.emotion] ?? ''} ${EMOTION_KR[display.emotion] ?? display.emotion}`
+                : '-'}
             </div>
           </div>
 

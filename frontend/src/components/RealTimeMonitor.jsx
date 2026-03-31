@@ -15,7 +15,14 @@ const EMOTION_KR = {
   confusion:  '혼란',
   amused:     '웃음',
   surprise:   '놀람',
-  neutral:    '중립',
+};
+
+const EMOTION_EMOJI = {
+  engagement: '😊',
+  boredom:    '😑',
+  confusion:  '😕',
+  amused:     '😄',
+  surprise:   '😲',
 };
 
 
@@ -133,7 +140,9 @@ function StudentCard({ student, state, onClick, selected }) {
         <div style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 11, color: '#AAA' }}>표정</div>
           <div style={{ fontSize: 13, fontWeight: 700, color: '#444', marginTop: 2 }}>
-            {(state.expression && EMOTION_KR[state.expression]) ?? state.expression ?? '-'}
+            {state.expression
+              ? `${EMOTION_EMOJI[state.expression] ?? ''} ${EMOTION_KR[state.expression] ?? state.expression}`
+              : '-'}
           </div>
         </div>
       </div>

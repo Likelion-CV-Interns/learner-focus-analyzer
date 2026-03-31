@@ -10,7 +10,7 @@ const API = 'https://likelionfocus.duckdns.org';
 
 const EMOTION_KR = {
   engagement: '집중', boredom: '지루함', confusion: '혼란',
-  amused: '웃음', surprise: '놀람', neutral: '중립',
+  amused: '웃음', surprise: '놀람',
 };
 
 const STATUS_KR = {
@@ -463,7 +463,10 @@ function StudentReport({ sessionId, userId, userName, avgFocus, avgFatigue }) {
 
 // ── 메인 컴포넌트 ──────────────────────────────────────────────────────────────
 
-export default function TotalEvaluation() {
+export default function TotalEvaluation({ isManager = false }) {
+  const [instructors,          setInstructors]          = useState([]);
+  const [selectedInstructorId, setSelectedInstructorId] = useState('');
+
   const [sessions,          setSessions]          = useState([]);
   const [sessionsLoading,   setSessionsLoading]   = useState(true);
   const [selectedSessionId, setSelectedSessionId] = useState('');
@@ -474,18 +477,36 @@ export default function TotalEvaluation() {
   const [summaryLoading,  setSummaryLoading]  = useState(false);
   const [selectedUserId,  setSelectedUserId]  = useState('');
 
+  // ── 매니저: 강의자 목록 fetch ──
+  useEffect(() => {
+    if (!isManager) return;
+    fetch(`${API}/api/instructors`)
+      .then(r => r.json())
+      .then(d => {
+        const list = d.instructors ?? [];
+        setInstructors(list);
+        if (list.length) setSelectedInstructorId(list[0].instructor_id);
+      })
+      .catch(() => {});
+  }, [isManager]);
+
   // ── 세션 목록 fetch ──
   useEffect(() => {
-    fetch(`${API}/api/sessions`)
+    if (isManager && !selectedInstructorId) return;
+    setSessionsLoading(true);
+    const url = isManager
+      ? `${API}/api/sessions?instructor_id=${selectedInstructorId}`
+      : `${API}/api/sessions`;
+    fetch(url)
       .then(r => r.json())
       .then(d => {
         const list = d.sessions ?? [];
         setSessions(list);
-        if (list.length) setSelectedSessionId(list[0].session_id);
+        setSelectedSessionId(list.length ? list[0].session_id : '');
         setSessionsLoading(false);
       })
       .catch(() => setSessionsLoading(false));
-  }, []);
+  }, [isManager, selectedInstructorId]);
 
   // ── 세션 변경 시 참여자 요약 fetch ──
   useEffect(() => {
@@ -515,6 +536,33 @@ export default function TotalEvaluation() {
         <h1 style={{ fontSize: 22, fontWeight: 800, color: '#1A1A1A' }}>총 집중도 평가</h1>
         <p style={{ fontSize: 13, color: '#888', marginTop: 3 }}>강의별 학습자 집중도 종합 리포트</p>
       </div>
+
+      {/* 강의자 탭 (매니저 전용) */}
+      {isManager && instructors.length > 0 && (
+        <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+          {instructors.map(inst => {
+            const isSelected = selectedInstructorId === inst.instructor_id;
+            return (
+              <button
+                key={inst.instructor_id}
+                onClick={() => setSelectedInstructorId(inst.instructor_id)}
+                style={{
+                  padding: '8px 18px', borderRadius: 20, cursor: 'pointer',
+                  border: isSelected ? '2px solid #FF6B2B' : '1.5px solid #E0E0E0',
+                  background: isSelected ? '#FFF5F0' : '#fff',
+                  color: isSelected ? '#FF6B2B' : '#555',
+                  fontWeight: isSelected ? 700 : 500,
+                  fontSize: 13,
+                  boxShadow: isSelected ? '0 2px 8px rgba(255,107,43,0.15)' : 'none',
+                  transition: 'all 0.15s',
+                }}
+              >
+                {inst.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Controls */}
       <div style={{

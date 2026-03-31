@@ -8,11 +8,66 @@ function formatTime(str) {
   return str.replace('T', ' ').slice(11, 16);
 }
 
-export default function ManagerDashboard({ onNewNotification }) {
-  const [sessions,         setSessions]         = useState([]);
-  const [loading,          setLoading]          = useState(true);
-  const [monitoringTarget, setMonitoringTarget] = useState(null);
+function InstructorTabs({ instructors, sessions, selected, onSelect }) {
+  return (
+    <div style={{
+      display: 'flex', gap: 8, marginBottom: 24,
+      flexWrap: 'wrap',
+    }}>
+      {instructors.map(inst => {
+        const isLive = sessions.some(s => s.instructor_id === inst.instructor_id && !s.ended_at);
+        const isSelected = selected === inst.instructor_id;
+        return (
+          <button
+            key={inst.instructor_id}
+            onClick={() => onSelect(inst.instructor_id)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              padding: '8px 18px', borderRadius: 20, cursor: 'pointer',
+              border: isSelected ? '2px solid #FF6B2B' : '1.5px solid #E0E0E0',
+              background: isSelected ? '#FFF5F0' : '#fff',
+              color: isSelected ? '#FF6B2B' : '#555',
+              fontWeight: isSelected ? 700 : 500,
+              fontSize: 13,
+              boxShadow: isSelected ? '0 2px 8px rgba(255,107,43,0.15)' : 'none',
+              transition: 'all 0.15s',
+            }}
+          >
+            {isLive && (
+              <span style={{
+                width: 7, height: 7, borderRadius: '50%',
+                background: '#EF4444', display: 'inline-block',
+                boxShadow: '0 0 0 2px rgba(239,68,68,0.3)',
+              }} />
+            )}
+            {inst.name}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
+export default function ManagerDashboard({ onNewNotification }) {
+  const [instructors,         setInstructors]         = useState([]);
+  const [sessions,            setSessions]            = useState([]);
+  const [selectedInstructor,  setSelectedInstructor]  = useState('');
+  const [loading,             setLoading]             = useState(true);
+  const [monitoringTarget,    setMonitoringTarget]    = useState(null);
+
+  // 강의자 목록 fetch
+  useEffect(() => {
+    fetch(`${API}/api/instructors`)
+      .then(r => r.json())
+      .then(d => {
+        const list = d.instructors ?? [];
+        setInstructors(list);
+        if (list.length) setSelectedInstructor(list[0].instructor_id);
+      })
+      .catch(() => {});
+  }, []);
+
+  // 전체 세션 fetch (10초 갱신)
   const fetchSessions = () => {
     fetch(`${API}/api/sessions`)
       .then(r => r.json())
@@ -22,9 +77,16 @@ export default function ManagerDashboard({ onNewNotification }) {
 
   useEffect(() => {
     fetchSessions();
-    const t = setInterval(fetchSessions, 10000); // 10초마다 갱신
+    const t = setInterval(fetchSessions, 10000);
     return () => clearInterval(t);
   }, []);
+
+  const selectedInst = instructors.find(i => i.instructor_id === selectedInstructor);
+
+  // 선택된 강의자의 라이브 세션만
+  const activeSessions = sessions.filter(
+    s => s.instructor_id === selectedInstructor && !s.ended_at
+  );
 
   // ── 모니터링 뷰 ──
   if (monitoringTarget) {
@@ -54,11 +116,13 @@ export default function ManagerDashboard({ onNewNotification }) {
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               color: '#fff', fontWeight: 800, fontSize: 14,
             }}>
-              {monitoringTarget.name[0]}
+              {monitoringTarget.instructorName?.[0] ?? '?'}
             </div>
             <span style={{ fontSize: 14, fontWeight: 700, color: '#1A1A1A' }}>
-              {monitoringTarget.name}
+              {monitoringTarget.instructorName}
             </span>
+            <span style={{ fontSize: 12, color: '#888' }}>·</span>
+            <span style={{ fontSize: 13, color: '#555' }}>{monitoringTarget.name}</span>
             <span style={{
               padding: '3px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700,
               background: '#FEF2F2', color: '#EF4444', border: '1.5px solid #FECACA',
@@ -69,7 +133,11 @@ export default function ManagerDashboard({ onNewNotification }) {
         </div>
         <RealTimeMonitor
           onNewNotification={onNewNotification}
-          monitoringTarget={{ sessionId: monitoringTarget.session_id, name: monitoringTarget.name, course: '' }}
+          monitoringTarget={{
+            sessionId: monitoringTarget.session_id,
+            name: monitoringTarget.instructorName,
+            course: monitoringTarget.name,
+          }}
         />
       </div>
     );
@@ -78,7 +146,7 @@ export default function ManagerDashboard({ onNewNotification }) {
   // ── 세션 목록 ──
   return (
     <div style={{ maxWidth: 1280, margin: '0 auto', padding: '24px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 800, color: '#1A1A1A' }}>진행 중인 세션</h1>
           <p style={{ fontSize: 13, color: '#888', marginTop: 3 }}>
@@ -97,28 +165,61 @@ export default function ManagerDashboard({ onNewNotification }) {
         </button>
       </div>
 
-      {/* Summary */}
+      {/* 강의자 탭 */}
+      {instructors.length > 0 && (
+        <InstructorTabs
+          instructors={instructors}
+          sessions={sessions}
+          selected={selectedInstructor}
+          onSelect={setSelectedInstructor}
+        />
+      )}
+
+      {/* 요약 */}
       <div style={{ display: 'flex', gap: 16, marginBottom: 24 }}>
         {[
-          { label: '전체 세션', value: `${sessions.length}개`, icon: '📋', color: '#3B82F6' },
+          { label: '라이브 세션', value: `${activeSessions.length}개`, icon: '🔴', color: '#EF4444' },
+          { label: '전체 강의자', value: `${instructors.length}명`, icon: '👨‍🏫', color: '#3B82F6' },
         ].map(item => (
           <div key={item.label} style={{
-            background: '#fff', borderRadius: 14, padding: '18px 22px',
+            background: '#fff', borderRadius: 14, padding: '16px 20px',
             border: '1.5px solid #EEE', boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
           }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
               <span style={{ fontSize: 12, color: '#888' }}>{item.label}</span>
-              <span style={{ fontSize: 20 }}>{item.icon}</span>
+              <span style={{ fontSize: 18 }}>{item.icon}</span>
             </div>
-            <div style={{ fontSize: 26, fontWeight: 800, color: item.color }}>{item.value}</div>
+            <div style={{ fontSize: 24, fontWeight: 800, color: item.color }}>{item.value}</div>
           </div>
         ))}
       </div>
 
-      {/* Session cards */}
+      {/* 선택된 강의자 섹션 헤더 */}
+      {selectedInst && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16,
+        }}>
+          <div style={{
+            width: 36, height: 36, borderRadius: 10,
+            background: 'linear-gradient(135deg, #FF6B2B, #FF9A5C)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: '#fff', fontWeight: 800, fontSize: 15,
+          }}>
+            {selectedInst.name[0]}
+          </div>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: '#1A1A1A' }}>{selectedInst.name}</div>
+            <div style={{ fontSize: 11, color: '#AAA' }}>
+              {activeSessions.length > 0 ? `${activeSessions.length}개 세션 진행 중` : '진행 중인 세션 없음'}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 세션 카드 */}
       {loading ? (
         <div style={{ textAlign: 'center', padding: '60px 0', color: '#AAA' }}>불러오는 중...</div>
-      ) : sessions.length === 0 ? (
+      ) : activeSessions.length === 0 ? (
         <div style={{
           textAlign: 'center', padding: '60px 0',
           background: '#fff', borderRadius: 16, border: '1.5px solid #EEE',
@@ -129,26 +230,16 @@ export default function ManagerDashboard({ onNewNotification }) {
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 16 }}>
-          {sessions.map(s => (
+          {activeSessions.map(s => (
             <div key={s.session_id} style={{
               background: '#fff', borderRadius: 16, padding: '20px 22px',
               border: '2px solid #FFD5C0',
               boxShadow: '0 4px 20px rgba(255,107,43,0.1)',
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 }}>
-                <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                  <div style={{
-                    width: 44, height: 44, borderRadius: 12,
-                    background: 'linear-gradient(135deg, #FF6B2B, #FF9A5C)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    color: '#fff', fontSize: 18, fontWeight: 800,
-                  }}>
-                    {s.name[0]}
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: '#1A1A1A' }}>{s.name}</div>
-                    <div style={{ fontSize: 11, color: '#AAA', marginTop: 2 }}>시작: {formatTime(s.created_at)}</div>
-                  </div>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: '#1A1A1A' }}>{s.name}</div>
+                  <div style={{ fontSize: 11, color: '#AAA', marginTop: 3 }}>시작: {formatTime(s.created_at)}</div>
                 </div>
                 <span style={{
                   padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 700,
@@ -159,7 +250,7 @@ export default function ManagerDashboard({ onNewNotification }) {
               </div>
 
               <button
-                onClick={() => setMonitoringTarget(s)}
+                onClick={() => setMonitoringTarget({ ...s, instructorName: selectedInst?.name ?? '' })}
                 style={{
                   width: '100%', padding: '10px',
                   background: 'linear-gradient(135deg, #FF6B2B, #FF8C55)',

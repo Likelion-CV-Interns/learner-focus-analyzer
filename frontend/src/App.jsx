@@ -124,7 +124,7 @@ export default function App() {
 
         {/* ── 공통: 총 집중도 평가 ── */}
         {activePage === 'evaluation' && (
-          <TotalEvaluation />
+          <TotalEvaluation isManager={user.role === 'manager'} />
         )}
       </div>
     </div>
