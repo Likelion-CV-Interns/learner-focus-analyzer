@@ -6,6 +6,10 @@ import TotalEvaluation from './components/TotalEvaluation';
 import ManagerDashboard from './components/ManagerDashboard';
 import SessionStartPage from './components/SessionStartPage';
 import { NotificationToast, NotificationPanel } from './components/NotificationPanel';
+import RealTimeMonitorMock from './components/RealTimeMonitorMock';
+
+// ── 목업 캡처용: true로 설정하면 로그인 없이 바로 모니터링 화면 표시 ──
+const MOCK_MODE = true;
 
 let notifIdCounter = 0;
 
@@ -61,6 +65,25 @@ export default function App() {
     setActivePage(page);
     setShowPanel(false);
   }, []);
+
+  if (MOCK_MODE) {
+    const mockUser = { role: 'instructor', name: '김라이언' };
+    return (
+      <div style={{ minHeight: '100vh', background: '#F5F5F5', display: 'flex', flexDirection: 'column' }}>
+        <Navbar
+          user={mockUser}
+          activePage="realtime"
+          onPageChange={() => {}}
+          notifCount={3}
+          onNotifClick={() => {}}
+          onLogout={() => {}}
+        />
+        <div style={{ flex: 1 }}>
+          <RealTimeMonitorMock />
+        </div>
+      </div>
+    );
+  }
 
   if (!user) {
     return <LoginPage onLogin={handleLogin} />;
