@@ -171,7 +171,7 @@ learner-focus-analyzer/
 | **피로도** | EAR 패턴 + 눈 깜빡임 빈도 | 0~100%, 높을수록 피로 |
 | **표정** | RandomForest 5-class 분류 | 집중😊 / 지루함😑 / 혼란😕 / 웃음😄 / 놀람😲 |
 | **졸음** | EAR 임계치 연속 하강 감지 | 즉시 알림 발송 |
-| **핸드폰** | YOLOv8 confidence 기반 탐지 | 감지 후 5초간 표시 유지 |
+| **핸드폰** | YOLOv11s confidence 기반 탐지 | 감지 후 5초간 표시 유지 |
 
 ---
 
