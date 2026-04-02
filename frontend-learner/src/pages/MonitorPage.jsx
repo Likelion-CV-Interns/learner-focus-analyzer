@@ -38,14 +38,20 @@ export default function MonitorPage({ user, session, onLeave }) {
   const wsTimerRef   = useRef(null);
   const streamRef   = useRef(null);
 
-  const [camReady,   setCamReady]   = useState(false);
-  const [camOn,      setCamOn]      = useState(true);
-  const [mpReady,    setMpReady]    = useState(false);
-  const [wsStatus,   setWsStatus]   = useState('disconnected');
-  const [display,    setDisplay]    = useState({
+  const [camReady,       setCamReady]       = useState(false);
+  const [camOn,          setCamOn]          = useState(true);
+  const [mpReady,        setMpReady]        = useState(false);
+  const [wsStatus,       setWsStatus]       = useState('disconnected');
+  const [display,        setDisplay]        = useState({
     status: 'uncertain', focusScore: 0, fatigueScore: 0,
     avgEar: 0, emotion: null, phoneDetected: false,
   });
+
+  // ── 캘리브레이션 상태 ─────────────────────────────────────────────────────
+  // 'idle' → 'running' → 'done'
+  const [calibState,     setCalibState]     = useState('idle');
+  const [calibCountdown, setCalibCountdown] = useState(3);
+  const calibFramesRef = useRef([]);
 
   // ── 퀴즈 상태 ──────────────────────────────────────────────────────────────
   const [quizzes,     setQuizzes]     = useState([]);
@@ -134,6 +140,54 @@ export default function MonitorPage({ user, session, onLeave }) {
     initDetector().then(() => setMpReady(true)).catch(console.error);
   }, []);
 
+  // ── 2-b. 캘리브레이션: cam + MP 준비되면 자동 시작 ───────────────────────
+  useEffect(() => {
+    if (!camReady || !mpReady || calibState !== 'idle') return;
+    setCalibState('running');
+    setCalibCountdown(3);
+    calibFramesRef.current = [];
+  }, [camReady, mpReady, calibState]);
+
+  // ── 2-c. 캘리브레이션 수집 루프 (3초) ────────────────────────────────────
+  useEffect(() => {
+    if (calibState !== 'running') return;
+
+    const countdownTimer = setInterval(() => {
+      setCalibCountdown(prev => Math.max(1, prev - 1));
+    }, 1000);
+
+    const collectTimer = setInterval(() => {
+      const video = videoRef.current;
+      if (!video || !isDetectorReady()) return;
+      const result = detect(video, performance.now());
+      if (result) calibFramesRef.current.push(result);
+    }, 33);
+
+    const doneTimer = setTimeout(() => {
+      clearInterval(collectTimer);
+      clearInterval(countdownTimer);
+
+      const frames = calibFramesRef.current;
+      if (frames.length > 5) {
+        const mean = (fn) => frames.reduce((s, f) => s + fn(f), 0) / frames.length;
+        scorerRef.current.calibrate({
+          gazeYaw:   mean(f => f.gaze?.yaw_ratio   ?? 0),
+          gazePitch: mean(f => f.gaze?.pitch_ratio  ?? 0),
+          headPitch: mean(f => f.head?.pitch        ?? 0),
+          headYaw:   mean(f => f.head?.yaw          ?? 0),
+          ear:       mean(f => f.ear?.avg           ?? 0.28),
+        });
+      }
+      setCalibState('done');
+    }, 3000);
+
+    return () => {
+      clearInterval(collectTimer);
+      clearInterval(countdownTimer);
+      clearTimeout(doneTimer);
+    };
+  }, [calibState]);
+
   // ── 3. Colab sender ────────────────────────────────────────────────────────
   useEffect(() => {
     if (COLAB_URL) {
@@ -209,9 +263,9 @@ export default function MonitorPage({ user, session, onLeave }) {
     });
   }, [mpReady]);
 
-  // ── 6. WS 전송 루프 ───────────────────────────────────────────────────────
+  // ── 6. WS 전송 루프 (캘리브레이션 완료 후에만 시작) ─────────────────────
   useEffect(() => {
-    if (!camReady || !mpReady) return;
+    if (!camReady || !mpReady || calibState !== 'done') return;
 
     procTimerRef.current = setInterval(runDetection, PROC_INTERVAL);
     wsTimerRef.current   = setInterval(() => {
@@ -225,7 +279,7 @@ export default function MonitorPage({ user, session, onLeave }) {
       clearInterval(procTimerRef.current);
       clearInterval(wsTimerRef.current);
     };
-  }, [camReady, mpReady, runDetection]);
+  }, [camReady, mpReady, calibState, runDetection]);
 
   // ── UI ────────────────────────────────────────────────────────────────────
   const cfg = STATUS_CFG[display.status] ?? STATUS_CFG.uncertain;
@@ -317,8 +371,48 @@ export default function MonitorPage({ user, session, onLeave }) {
               </div>
             </div>
           )}
+
+          {/* 캘리브레이션 오버레이 */}
+          {camReady && calibState === 'running' && (
+            <div style={{
+              position: 'absolute', inset: 0,
+              background: 'rgba(0,0,0,0.75)',
+              display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center',
+              backdropFilter: 'blur(2px)',
+            }}>
+              <div style={{ fontSize: 52, marginBottom: 16 }}>👁️</div>
+              <div style={{ color: '#fff', fontSize: 18, fontWeight: 700, marginBottom: 8 }}>
+                정면을 바라봐 주세요
+              </div>
+              <div style={{ color: '#AAA', fontSize: 13, marginBottom: 28 }}>
+                시선 기준점을 설정하고 있습니다
+              </div>
+              {/* 카운트다운 */}
+              <div style={{
+                width: 72, height: 72, borderRadius: '50%',
+                border: '3px solid #FF6B2B',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 36, fontWeight: 800, color: '#FF6B2B',
+              }}>
+                {calibCountdown}
+              </div>
+              {/* 진행 바 */}
+              <div style={{
+                marginTop: 24, width: 180, height: 4,
+                background: 'rgba(255,255,255,0.15)', borderRadius: 4, overflow: 'hidden',
+              }}>
+                <div style={{
+                  height: '100%', borderRadius: 4, background: '#FF6B2B',
+                  width: `${((3 - calibCountdown) / 3) * 100}%`,
+                  transition: 'width 1s linear',
+                }} />
+              </div>
+            </div>
+          )}
+
           {/* Status overlay */}
-          {camReady && (
+          {camReady && calibState === 'done' && (
             <div style={{
               position: 'absolute', top: 12, left: 12,
               background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)',
@@ -328,7 +422,7 @@ export default function MonitorPage({ user, session, onLeave }) {
               <span style={{ fontSize: 13, fontWeight: 700, color: cfg.color }}>{cfg.label}</span>
             </div>
           )}
-          {display.phoneDetected && (
+          {calibState === 'done' && display.phoneDetected && (
             <div style={{
               position: 'absolute', bottom: 12, left: 12, right: 12,
               background: 'rgba(139,92,246,0.9)', borderRadius: 10,
